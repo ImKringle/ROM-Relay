@@ -1,0 +1,62 @@
+{
+  "library_directory": "platforms",
+  "database_path": "romrelay.db",
+  "library_scan_interval_hours": 1,
+  "metadata_refresh_days": 30,
+  "existing_output": "skip",
+  "ui_theme": "default",
+  "server": {
+    "listen_address": "0.0.0.0",
+    "port": 8080,
+    "advertise_ip": "",
+    "advertise_port": 0,
+    "public_base_url": "",
+    "remote_access_token": ""
+  },
+  "metadata": {
+    "libretro": {
+      "enabled": true,
+      "database_directory": "metadata/libretro/databases",
+      "thumbnail_directory": "metadata/libretro/thumbnails",
+      "auto_update": true,
+      "download_thumbnails": true
+    },
+    "igdb": {
+      "enabled": false,
+      "client_id": "",
+      "client_secret": ""
+    }
+  },
+  "remote_search": {
+    "enabled": false,
+    "host": "",
+    "port": 22,
+    "username": "",
+    "password": "",
+    "root_directory": "/",
+    "host_key_sha256": "",
+    "max_results": 200,
+    "max_file_size_mb": 4096,
+    "platform_directories": {
+      "gb": "gb",
+      "gbc": "gbc",
+      "gba": "gba",
+      "nds": "nds",
+      "3ds": "3ds",
+      "nes": "nes",
+      "snes": "snes",
+      "n64": "n64",
+      "genesis": "genesis"
+    }
+  },
+  "patching": {
+    "enabled": true,
+    "patch_directory": "patches",
+    "output_directory": "patched",
+    "admin_access_token": "",
+    "retention_hours": 24,
+    "max_rom_size_mb": 512,
+    "max_patch_size_mb": 64,
+    "timeout_seconds": 120
+  }
+}

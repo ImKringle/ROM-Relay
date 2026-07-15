@@ -1,0 +1,8 @@
+/ROMRelay.exe
+/romrelay.db
+/romrelay.db-*
+internal/drivers/boot9-3ds/*.bin
+/internal/drivers/cia-3ds-decryptor/*.exe
+/config.json
+/dist/
+/build/
