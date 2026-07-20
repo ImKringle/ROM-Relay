@@ -1,18 +1,15 @@
-// Package config loads ROM Relay's v2 configuration and the former CornTool
-// configuration. Legacy fields are retained on Config so older integrations can
-// migrate without a flag day; new code should use the v2 fields.
+// Package config loads ROM Relay's configuration.
 package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -39,9 +36,19 @@ type IGDBMetadata struct {
 	ClientSecret string `json:"client_secret"`
 }
 
+// PokeAPIMetadata gates the Pokédex reference fill. It is off by default, and
+// the Dex works without it. When DataDirectory points at a PokeAPI/api-data
+// checkout (the third_party/api-data submodule), the fill reads from disk and
+// never touches the network; otherwise it falls back to the live API.
+type PokeAPIMetadata struct {
+	Enabled       bool   `json:"enabled"`
+	DataDirectory string `json:"data_directory"`
+}
+
 type Metadata struct {
 	Libretro LibretroMetadata `json:"libretro"`
 	IGDB     IGDBMetadata     `json:"igdb"`
+	PokeAPI  PokeAPIMetadata  `json:"pokeapi"`
 }
 
 type RemoteSearch struct {
@@ -71,9 +78,9 @@ type Patching struct {
 type Config struct {
 	LibraryDirectory         string       `json:"library_directory"`
 	DatabasePath             string       `json:"database_path"`
+	DatabaseURL              string       `json:"-"`
 	LibraryScanIntervalHours int          `json:"library_scan_interval_hours"`
 	MetadataRefreshDays      int          `json:"metadata_refresh_days"`
-	Boot9Path                string       `json:"boot9_path"`
 	ExistingOutput           string       `json:"existing_output"`
 	UITheme                  string       `json:"ui_theme"`
 	Server                   Server       `json:"server"`
@@ -81,65 +88,173 @@ type Config struct {
 	RemoteSearch             RemoteSearch `json:"remote_search"`
 	Patching                 Patching     `json:"patching"`
 
-	// Former CornTool v1 fields.
-	InputDirectory string   `json:"input_directory,omitempty"`
-	ServeDirectory string   `json:"serve_directory,omitempty"`
-	ListenAddress  string   `json:"listen_address,omitempty"`
-	Port           int      `json:"port,omitempty"`
-	AdvertiseIP    string   `json:"advertise_ip,omitempty"`
-	AdvertisePort  int      `json:"advertise_port,omitempty"`
-	RemoteToken    string   `json:"remote_access_token,omitempty"`
-	Legacy         bool     `json:"-"`
-	Warnings       []string `json:"-"`
+	// PokemonSidecarURL is the base URL of the PKHeX save-parsing sidecar. When
+	// empty, Pokémon save ingestion and the Living Dex are disabled.
+	PokemonSidecarURL string `json:"-"`
+
+	// NDecryptSidecarURL is the base URL of the NDecrypt sidecar. When empty,
+	// the .3ds/.cci/.nds encrypt/decrypt upload flow is disabled.
+	NDecryptSidecarURL string `json:"-"`
+
+	// SaveDirectory holds users' uploaded game saves. Only metadata goes in the
+	// database, so this directory is what a backup of user saves must cover.
+	SaveDirectory string `json:"save_directory"`
+
+	// AdminPassword, when set, is applied to the built-in admin account at
+	// startup. Blank leaves an existing password in place, or generates one on
+	// first run (printed once to the operator).
+	AdminPassword string `json:"-"`
+
+	// Warnings collects non-fatal configuration issues surfaced at startup, such
+	// as an enabled provider that is missing its credentials and was disabled.
+	Warnings []string `json:"-"`
 }
 
-func Load(path string) (Config, error) {
-	b, err := os.ReadFile(path)
+// Load reads ROM Relay's configuration from `config.ini` (non-secret settings)
+// and secrets from the environment (optionally seeded by a `.env` file), both
+// resolved relative to dir. Both files are optional: an absent config.ini yields
+// documented defaults, and absent secrets are treated as empty. Relative paths
+// in config.ini are resolved against dir.
+func Load(dir string) (Config, error) {
+	ini := &iniFile{sections: map[string]map[string]string{"": {}}}
+	if b, err := os.ReadFile(filepath.Join(dir, "config.ini")); err == nil {
+		ini, err = parseINI(bytes.NewReader(b))
+		if err != nil {
+			return Config{}, err
+		}
+	} else if !os.IsNotExist(err) {
+		return Config{}, fmt.Errorf("read config.ini: %w", err)
+	}
+	if ini.has("library", "boot9_path") || ini.has("", "boot9_path") {
+		return Config{}, errors.New(`boot9_path is no longer configurable; place boot9.bin or boot9_prot.bin under internal/drivers/3ds in the application directory`)
+	}
+	sec, err := loadSecrets(dir)
 	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
+		return Config{}, err
 	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(b, &probe); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
-	}
-	legacy := probe["input_directory"] != nil || probe["serve_directory"] != nil
-	if !legacy && probe["boot9_path"] != nil {
-		return Config{}, errors.New(`boot9_path is no longer configurable; place boot9.bin or boot9_prot.bin under internal\drivers\boot9-3ds beside ROMRelay.exe`)
-	}
+	r := iniReader{ini: ini}
 	var c Config
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&c); err != nil {
-		return c, fmt.Errorf("parse config: %w", err)
+	c.LibraryDirectory = r.str("library", "directory")
+	c.DatabasePath = r.str("library", "database_path")
+	c.DatabaseURL = sec.get("DATABASE_URL")
+	c.PokemonSidecarURL = strings.TrimRight(sec.get("POKEMON_SIDECAR_URL"), "/")
+	if c.PokemonSidecarURL == "" {
+		c.PokemonSidecarURL = strings.TrimRight(r.str("pokemon", "sidecar_url"), "/")
 	}
-	if err := d.Decode(&struct{}{}); err != io.EOF {
-		return c, errors.New("parse config: expected one JSON document")
+	c.NDecryptSidecarURL = strings.TrimRight(sec.get("NDECRYPT_SIDECAR_URL"), "/")
+	if c.NDecryptSidecarURL == "" {
+		c.NDecryptSidecarURL = strings.TrimRight(r.str("ndecrypt", "sidecar_url"), "/")
 	}
-	if legacy {
-		return loadLegacy(c)
+	c.AdminPassword = sec.get("ADMIN_PASSWORD")
+	c.LibraryScanIntervalHours = r.integer("library", "scan_interval_hours")
+	c.MetadataRefreshDays = r.integer("library", "metadata_refresh_days")
+	c.ExistingOutput = r.str("library", "existing_output")
+	c.UITheme = r.str("library", "ui_theme")
+
+	c.Server.ListenAddress = r.str("server", "listen_address")
+	c.Server.Port = r.integer("server", "port")
+	c.Server.AdvertiseIP = r.str("server", "advertise_ip")
+	c.Server.AdvertisePort = r.integer("server", "advertise_port")
+	c.Server.PublicBaseURL = r.str("server", "public_base_url")
+	// Environment overrides let a container advertise the host's reachable address
+	// (config.ini is baked into the image, and inside a container IP auto-detection
+	// only finds the unreachable compose-network address).
+	if v := strings.TrimSpace(sec.get("ADVERTISE_IP")); v != "" {
+		c.Server.AdvertiseIP = v
 	}
-	patchEnabledConfigured := false
-	libretroEnabledConfigured := false
-	libretroAutoUpdateConfigured := false
-	libretroThumbnailsConfigured := false
-	if raw := probe["patching"]; raw != nil {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(raw, &fields) == nil {
-			patchEnabledConfigured = fields["enabled"] != nil
+	if v := strings.TrimSpace(sec.get("PUBLIC_BASE_URL")); v != "" {
+		c.Server.PublicBaseURL = v
+	}
+	c.Server.RemoteAccessToken = sec.get("REMOTE_ACCESS_TOKEN")
+
+	c.Metadata.Libretro.Enabled = r.boolean("metadata.libretro", "enabled")
+	c.Metadata.Libretro.DatabaseDirectory = r.str("metadata.libretro", "database_directory")
+	c.Metadata.Libretro.ThumbnailDirectory = r.str("metadata.libretro", "thumbnail_directory")
+	c.Metadata.Libretro.AutoUpdate = r.boolean("metadata.libretro", "auto_update")
+	c.Metadata.Libretro.DownloadThumbnails = r.boolean("metadata.libretro", "download_thumbnails")
+	c.Metadata.IGDB.Enabled = r.boolean("metadata.igdb", "enabled")
+	c.Metadata.IGDB.ClientID = sec.get("IGDB_CLIENT_ID")
+	c.Metadata.IGDB.ClientSecret = sec.get("IGDB_CLIENT_SECRET")
+	c.Metadata.PokeAPI.Enabled = r.boolean("metadata.pokeapi", "enabled")
+	c.Metadata.PokeAPI.DataDirectory = r.str("metadata.pokeapi", "data_directory")
+
+	c.RemoteSearch.Enabled = r.boolean("remote_search", "enabled")
+	c.RemoteSearch.Host = r.str("remote_search", "host")
+	c.RemoteSearch.Port = r.integer("remote_search", "port")
+	c.RemoteSearch.Username = r.str("remote_search", "username")
+	c.RemoteSearch.Password = sec.get("REMOTE_SEARCH_PASSWORD")
+	c.RemoteSearch.RootDirectory = r.str("remote_search", "root_directory")
+	c.RemoteSearch.HostKeySHA256 = r.str("remote_search", "host_key_sha256")
+	c.RemoteSearch.MaxResults = r.integer("remote_search", "max_results")
+	c.RemoteSearch.MaxFileSizeMB = r.integer("remote_search", "max_file_size_mb")
+	if platforms := ini.section("remote_search.platforms"); len(platforms) > 0 {
+		c.RemoteSearch.PlatformDirectories = map[string]string{}
+		for platform, directory := range platforms {
+			c.RemoteSearch.PlatformDirectories[platform] = directory
 		}
 	}
-	if raw := probe["metadata"]; raw != nil {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(raw, &fields) == nil && fields["libretro"] != nil {
-			var libretro map[string]json.RawMessage
-			if json.Unmarshal(fields["libretro"], &libretro) == nil {
-				libretroEnabledConfigured = libretro["enabled"] != nil
-				libretroAutoUpdateConfigured = libretro["auto_update"] != nil
-				libretroThumbnailsConfigured = libretro["download_thumbnails"] != nil
-			}
-		}
+
+	c.SaveDirectory = r.str("storage", "save_directory")
+
+	c.Patching.Enabled = r.boolean("patching", "enabled")
+	c.Patching.PatchDirectory = r.str("patching", "patch_directory")
+	c.Patching.OutputDirectory = r.str("patching", "output_directory")
+	c.Patching.AdminAccessToken = sec.get("ADMIN_ACCESS_TOKEN")
+	c.Patching.RetentionHours = r.integer("patching", "retention_hours")
+	c.Patching.MaxROMSizeMB = r.integer("patching", "max_rom_size_mb")
+	c.Patching.MaxPatchSizeMB = r.integer("patching", "max_patch_size_mb")
+	c.Patching.TimeoutSeconds = r.integer("patching", "timeout_seconds")
+	if r.err != nil {
+		return Config{}, r.err
 	}
-	return loadV2(c, filepath.Dir(path), probe["library_scan_interval_hours"] != nil, patchEnabledConfigured, libretroEnabledConfigured, libretroAutoUpdateConfigured, libretroThumbnailsConfigured)
+	return loadV2(c, dir,
+		ini.has("library", "scan_interval_hours"),
+		ini.has("patching", "enabled"),
+		ini.has("metadata.libretro", "enabled"),
+		ini.has("metadata.libretro", "auto_update"),
+		ini.has("metadata.libretro", "download_thumbnails"))
+}
+
+// iniReader reads typed values from an iniFile, remembering the first parse
+// error so a batch of field reads can be validated once. Absent keys return the
+// zero value; loadV2 then applies documented defaults, preserving behavior that
+// distinguishes "unset" from "explicitly zero" via iniFile.has.
+type iniReader struct {
+	ini *iniFile
+	err error
+}
+
+func (r *iniReader) str(section, key string) string {
+	return r.ini.section(section)[key]
+}
+
+func (r *iniReader) integer(section, key string) int {
+	if !r.ini.has(section, key) {
+		return 0
+	}
+	raw := r.ini.section(section)[key]
+	n, err := strconv.Atoi(raw)
+	if err != nil && r.err == nil {
+		r.err = fmt.Errorf("config.ini [%s] %s: expected an integer, got %q", section, key, raw)
+	}
+	return n
+}
+
+func (r *iniReader) boolean(section, key string) bool {
+	if !r.ini.has(section, key) {
+		return false
+	}
+	switch strings.ToLower(r.ini.section(section)[key]) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		if r.err == nil {
+			r.err = fmt.Errorf("config.ini [%s] %s: expected true or false, got %q", section, key, r.ini.section(section)[key])
+		}
+		return false
+	}
 }
 
 func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libretroEnabledConfigured, libretroAutoUpdateConfigured, libretroThumbnailsConfigured bool) (Config, error) {
@@ -187,6 +302,14 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 	}
 	if c.Metadata.Libretro.ThumbnailDirectory == "" {
 		c.Metadata.Libretro.ThumbnailDirectory = filepath.Join("metadata", "libretro", "thumbnails")
+	}
+	if c.SaveDirectory == "" {
+		c.SaveDirectory = filepath.Join("storage", "saves")
+	}
+	if c.Metadata.PokeAPI.DataDirectory == "" {
+		// The api-data submodule's endpoint tree; resolved like every other
+		// relative path, against the config directory.
+		c.Metadata.PokeAPI.DataDirectory = filepath.Join("third_party", "api-data", "data", "api", "v2")
 	}
 	if c.Patching.PatchDirectory == "" {
 		c.Patching.PatchDirectory = "patches"
@@ -243,7 +366,12 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 		return c, errors.New("patching limits must be positive")
 	}
 	if c.Metadata.IGDB.Enabled && (c.Metadata.IGDB.ClientID == "" || c.Metadata.IGDB.ClientSecret == "") {
-		return c, errors.New("metadata.igdb requires client_id and client_secret when enabled")
+		// Degrade rather than refuse to boot: a container with restart policies
+		// would otherwise crash-loop on a missing credential. Libretro metadata
+		// still works; the operator sees a warning and can add IGDB_CLIENT_ID /
+		// IGDB_CLIENT_SECRET later.
+		c.Metadata.IGDB.Enabled = false
+		c.Warnings = append(c.Warnings, "metadata.igdb is enabled but IGDB_CLIENT_ID/IGDB_CLIENT_SECRET are not set; IGDB enrichment is disabled")
 	}
 	if c.RemoteSearch.Enabled {
 		if c.RemoteSearch.Host == "" || strings.Contains(c.RemoteSearch.Host, "://") || c.RemoteSearch.Username == "" || c.RemoteSearch.Password == "" {
@@ -263,60 +391,18 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 	}
 	c.LibraryDirectory = absolute(base, c.LibraryDirectory)
 	c.DatabasePath = absolute(base, c.DatabasePath)
+	c.SaveDirectory = absolute(base, c.SaveDirectory)
 	c.Patching.PatchDirectory = absolute(base, c.Patching.PatchDirectory)
 	c.Patching.OutputDirectory = absolute(base, c.Patching.OutputDirectory)
 	c.Metadata.Libretro.DatabaseDirectory = absolute(base, c.Metadata.Libretro.DatabaseDirectory)
 	c.Metadata.Libretro.ThumbnailDirectory = absolute(base, c.Metadata.Libretro.ThumbnailDirectory)
+	c.Metadata.PokeAPI.DataDirectory = absolute(base, c.Metadata.PokeAPI.DataDirectory)
 	c.Server.PublicBaseURL = strings.TrimRight(c.Server.PublicBaseURL, "/")
 	for _, dir := range []string{c.LibraryDirectory, c.Patching.PatchDirectory, c.Patching.OutputDirectory, c.Metadata.Libretro.DatabaseDirectory, c.Metadata.Libretro.ThumbnailDirectory} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return c, fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
-	return c, nil
-}
-
-func loadLegacy(c Config) (Config, error) {
-	c.Legacy = true
-	c.Warnings = []string{"legacy CornTool configuration detected; migrate to the nested ROM Relay v2 configuration"}
-	if c.ListenAddress == "" {
-		c.ListenAddress = "0.0.0.0"
-	}
-	if c.Port == 0 {
-		c.Port = 8080
-	}
-	if c.AdvertisePort == 0 {
-		c.AdvertisePort = c.Port
-	}
-	if c.ExistingOutput == "" {
-		c.ExistingOutput = "skip"
-	}
-	if c.InputDirectory == "" || c.ServeDirectory == "" {
-		return c, errors.New("input_directory and serve_directory are required")
-	}
-	for label, p := range map[string]string{"input_directory": c.InputDirectory, "serve_directory": c.ServeDirectory} {
-		if st, err := os.Stat(p); err != nil || !st.IsDir() {
-			return c, fmt.Errorf("%s is not an accessible directory: %s", label, p)
-		}
-	}
-	if c.RemoteToken != "" && len(c.RemoteToken) < 16 {
-		return c, errors.New("remote_access_token must contain at least 16 characters")
-	}
-	if ip := net.ParseIP(c.AdvertiseIP); c.AdvertiseIP != "" && (ip == nil || ip.To4() == nil) {
-		return c, errors.New("advertise_ip must be an IPv4 address")
-	}
-	if ip := net.ParseIP(c.ListenAddress); ip == nil || ip.To4() == nil {
-		return c, errors.New("listen_address must be an IPv4 address")
-	}
-	if c.ExistingOutput != "skip" {
-		return c, errors.New("existing_output must be \"skip\" in v1")
-	}
-	s := Server{c.ListenAddress, c.Port, c.AdvertiseIP, c.AdvertisePort, "", c.RemoteToken}
-	if err := validateServer(s); err != nil {
-		return c, err
-	}
-	c.InputDirectory, _ = filepath.Abs(c.InputDirectory)
-	c.ServeDirectory, _ = filepath.Abs(c.ServeDirectory)
 	return c, nil
 }
 
@@ -341,6 +427,15 @@ func validateServer(s Server) error {
 		s.PublicBaseURL = strings.TrimRight(s.PublicBaseURL, "/")
 	}
 	return nil
+}
+
+// DatabaseDSN returns the effective data source for the catalog: the Postgres
+// DATABASE_URL when set, otherwise the SQLite database file path.
+func (c Config) DatabaseDSN() string {
+	if c.DatabaseURL != "" {
+		return c.DatabaseURL
+	}
+	return c.DatabasePath
 }
 
 func absolute(base, p string) string {

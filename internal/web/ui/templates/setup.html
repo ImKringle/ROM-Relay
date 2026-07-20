@@ -1,0 +1,18 @@
+{{define "setup"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Setup in progress{{end}}
+
+{{define "content"}}
+{{/* Shown while the first index runs. It must not depend on catalog data, there
+     isn't any yet, and it reloads itself once the server reports ready. */}}
+<div class="grid min-h-[70vh] place-items-center">
+  <section class="surface w-[min(520px,100%)] p-[clamp(28px,7vw,54px)] text-center" data-setup>
+    <div class="mx-auto mb-5 h-14 w-14 animate-spin rounded-full border-4 border-[var(--color-line)] border-t-[var(--color-accent)]" role="status" aria-label="Setup in progress"></div>
+    <span class="eyebrow">Fresh boot preparation</span>
+    <h1 class="my-1.5 text-[clamp(2rem,7vw,3.5rem)]">Setup in progress.</h1>
+    <p class="text-[var(--color-muted)]" data-setup-stage>{{.Stage}}</p>
+    <progress class="h-2 w-full" aria-label="Indeterminate setup progress"></progress>
+    <p class="text-sm text-[var(--color-muted)]">The catalog will appear automatically when ROM Relay is ready.</p>
+  </section>
+</div>
+{{end}}

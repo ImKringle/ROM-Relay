@@ -1,65 +1,62 @@
 # ROM Relay configuration
 
-ROM Relay reads `config.json` once during startup. Changes, including
-`ui_theme`, require a restart. Relative paths resolve from the configuration
-file's directory.
+ROM Relay reads two files once during startup, both in its config directory (`config.docker.ini` and `.env` at the repo root in the Docker deployment):
 
-## Windows LAN setup helper
+- `config.ini`, non-secret settings, grouped in `[section]` blocks. Copy `config.example.ini` to `config.ini` and edit. Every key shows its default; delete a line to accept the default.
+- `.env`, secrets (tokens, passwords, IGDB credentials). Copy `.env.example` to `.env`. Never commit it. Values already present in the process environment (for example Docker `--env-file .env`) override the file, so a container needs no on-disk `.env`.
 
-Run `Setup-ROMRelay.bat` beside `ROMRelay.exe` for an interactive first setup.
-It requests Administrator permission for Windows Firewall, prefers an active
-private IPv4 adapter with a default gateway, and shows the adapter, internal IP,
-gateway, Windows network category, port, and final catalog URL before changing
-anything. Answering no allows another adapter or a manual private IP.
+Changes, including `ui_theme`, require a restart. Relative paths in `config.ini` resolve from the file's directory. A different directory can be pointed at with the `-config-dir <path>` flag.
 
-After confirmation it timestamps a `config.json.backup-*` copy, writes
-`listen_address`, `port`, `advertise_ip`, and `advertise_port` atomically,
-creates a firewall allow rule restricted to the selected TCP port, executable,
-and Windows Private profile, then optionally launches ROM Relay. It warns about
-occupied ports and Public network profiles. Reserve the advertised address in
-the router when stable QR URLs matter.
+Secrets live only in `.env`:
+
+| Environment variable | Purpose |
+|---|---|
+| `REMOTE_ACCESS_TOKEN` | Public catalog viewer token (min 24 chars). |
+| `ADMIN_ACCESS_TOKEN` | Admin/patch-workspace token (min 24 chars, must differ from the viewer token). Blank = generated per run. |
+| `IGDB_CLIENT_ID`, `IGDB_CLIENT_SECRET` | IGDB metadata credentials. |
+| `REMOTE_SEARCH_PASSWORD` | SFTP password for remote search. |
+| `DATABASE_URL` | Optional `postgres://` URL selecting the PostgreSQL backend. Blank = SQLite. |
+
+## API access
+
+A browser session (cookie, established at `/login`) is the normal way to reach the internal API. Scripts and other tools that cannot hold a session authenticate instead with a named, revocable API key, created from **Admin → API Keys** by a signed-in admin. A key carries that admin's authority everywhere a session would: general routes and the admin-only surface alike.
+
+Send it as a bearer token:
+
+```sh
+curl -H "Authorization: Bearer rr_your-key-here" https://your-relay/api/admin/games
+```
+
+Revoking a key from the same page takes effect immediately. Revoking is preferred over deleting the admin account that issued it; disabling or deleting that account also revokes every key it created. See [API.md](API.md) for the full route reference.
 
 ## Clean shutdown
 
-Use the authenticated **Shut down ROM Relay cleanly** button on the admin page,
-or Ctrl+C in the foreground console. The admin route requires the admin cookie
-and CSRF token. Shutdown stops accepting HTTP, cancels active background work
-and queued patch/SFTP jobs, waits for their goroutines, checkpoints SQLite WAL,
-closes the database, and then exits. A normal clean exit releases the TCP port
-and removes SQLite WAL/SHM sidecars. Forced process termination cannot run this
-sequence and may leave recoverable sidecars for the next SQLite open.
+Use the authenticated **Shut down ROM Relay cleanly** button on the admin page, or Ctrl+C in the foreground console. The admin route requires the admin cookie and CSRF token. Shutdown stops accepting HTTP, cancels active background work and queued patch/SFTP jobs, waits for their goroutines, checkpoints SQLite WAL, closes the database, and then exits. A normal clean exit releases the TCP port and removes SQLite WAL/SHM sidecars. Forced process termination cannot run this sequence and may leave recoverable sidecars for the next SQLite open.
 
-## Top-level fields
+## Database backend
 
-| Field | Default | Meaning |
+By default ROM Relay uses an embedded SQLite catalog (the `[library]` `database_path` file), which is ideal for single-user/local deployments. For multi-user or large deployments, set `DATABASE_URL` to a `postgres://` URL in `.env`; ROM Relay then uses PostgreSQL and ignores `database_path`. The schema is created automatically on first start against either backend. Only catalog metadata lives in the database, ROM bytes always stay on the mounted filesystem.
+
+## `[library]`
+
+| Key | Default | Meaning |
 |---|---:|---|
-| `library_directory` | `platforms` | Platform-shaped ROM library. Created automatically. |
-| `database_path` | `romrelay.db` | Generated SQLite catalog cache; ROM bytes are never stored here. |
-| `library_scan_interval_hours` | `1` | Reconciliation interval. `0` disables repeats, not startup reconciliation. |
+| `directory` | `platforms` | Platform-shaped ROM library. Created automatically. |
+| `database_path` | `romrelay.db` | SQLite catalog cache (ignored when `DATABASE_URL` is set); ROM bytes are never stored here. |
+| `scan_interval_hours` | `1` | Reconciliation interval. `0` disables repeats, not startup reconciliation. |
 | `metadata_refresh_days` | `30` | Libretro index and metadata staleness interval; also controls optional IGDB refresh. |
 | `existing_output` | `skip` | Must be `skip`; ROM Relay never overwrites a CIA. |
 | `ui_theme` | `default` | `default` or `corn`; presentation only, read once at startup. |
 
 ## Theme contract
 
-- `default` uses clean ROM Relay web copy, dark blue styling, standard CLI
-  wording, and a cyan-accented operator console.
-- `corn` uses Corn Mode copy, gold/brown styling, corn vocabulary and icons,
-  and a gold-accented operator console.
-- The selected theme applies to the public catalog, game details, patch admin
-  page, authentication errors, startup summary, scans, conversions, warnings,
-  server/admin URLs, and shutdown output.
-- Theme choice never changes file formats, paths, database contents, hashes,
-  authentication decisions, or HTTP behavior.
-- When stdout is redirected, progress becomes deterministic plain lines and
-  ANSI/color/cursor sequences are disabled.
-- A real stdin/stdout terminal automatically receives the compiled-in tview
-  dashboard: library counts, active jobs, logs, CPU/RAM/HTTP/download and
-  SQLite health. Press `q` or Ctrl+C for a clean shutdown. No configuration
-  field or separate runtime is required.
-- `q` and Ctrl+C enter the same coordinated shutdown path. The dashboard stays
-  on screen until workers and SQLite close and the final shutdown event is
-  rendered; tview never exits independently.
+- `default` uses clean ROM Relay copy and the dark-blue palette.
+- `corn` uses Corn Mode copy and the harvest-gold palette: corn vocabulary in the catalog, game details, patch admin page, authentication errors, startup summary, scans, conversions, warnings, server/admin URLs, and shutdown output.
+- Both themes share every layout and component; only the design-token values and the wording change.
+- Theme choice never changes file formats, paths, database contents, hashes, authentication decisions, or HTTP behavior.
+- When stdout is redirected, progress becomes deterministic plain lines and ANSI/color/cursor sequences are disabled.
+- A real stdin/stdout terminal automatically receives the compiled-in tview dashboard: library counts, active jobs, logs, CPU/RAM/HTTP/download and SQLite health. Press `q` or Ctrl+C for a clean shutdown. No configuration field or separate runtime is required.
+- `q` and Ctrl+C enter the same coordinated shutdown path. The dashboard stays on screen until workers and SQLite close and the final shutdown event is rendered; tview never exits independently.
 
 ## boot9 and dump dependencies
 
@@ -73,90 +70,54 @@ sequence and may leave recoverable sidecars for the next SQLite open.
 | HTTP download, ranges, FBI QR/queue | No |
 | Other supported platforms | No |
 
-Place a full `boot9.bin` or protected `boot9_prot.bin` under the fixed
-`internal/drivers/boot9-3ds` directory beside `ROMRelay.exe`. The converter
-checks it against the known retail SHA-256. ROM Relay never downloads, copies,
-or exposes it. Developer-unit keys are not supported. A v2 configuration that
-still contains `boot9_path` is rejected with migration guidance.
+Place a full `boot9.bin` or protected `boot9_prot.bin` under the fixed `internal/drivers/3ds` directory under the drivers root (`DRIVERS_DIR` in Docker). The converter checks it against the known retail SHA-256. ROM Relay never downloads, copies, or exposes it. Developer-unit keys are not supported. A configuration that still contains `boot9_path` is rejected with migration guidance.
 
 ## Optional CIA decryption driver
 
-Encrypted CIA downloads always remain available for FBI and real/homelab 3DS
-use. Mobile-emulator preparation is enabled only when the files documented in
-`internal/drivers/cia-3ds-decryptor/README.md` exist beside the executable.
-There is no configurable driver path. The Redux-compatible workflow is
-administrator-only and never runs from a public catalog session. Its upstream
-bundle includes unsigned third-party executables and has no aggregate
-repository license, so ROM Relay does not redistribute it.
+Encrypted CIA downloads always remain available for FBI and real/homelab 3DS use. Mobile-emulator preparation is enabled only when the files documented in `internal/drivers/cia-3ds-decryptor/README.md` exist beside the executable. There is no configurable driver path. The Redux-compatible workflow is administrator-only and never runs from a public catalog session. Its upstream bundle includes unsigned third-party executables and has no aggregate repository license, so ROM Relay does not redistribute it.
 
-## `server`
+## `[server]`
 
-| Field | Default | Meaning |
+| Key | Default | Meaning |
 |---|---:|---|
 | `listen_address` | `0.0.0.0` | Local bind IP. |
 | `port` | `8080` | Local TCP port. |
 | `advertise_ip` | auto | Address placed in direct URLs and QR codes. Set it when multiple LAN/VPN adapters are present. |
 | `advertise_port` | local port | Externally advertised port. |
 | `public_base_url` | blank | Complete HTTP(S) reverse-proxy/VPN origin; overrides advertised host/port. |
-| `remote_access_token` | blank | Viewer token. Configured values require at least 24 characters. |
 
-`public_base_url` may not contain credentials, a query, or a fragment. Plain
-HTTP tokenizes access but does not encrypt traffic; prefer a private VPN or an
-HTTPS reverse proxy.
+The viewer token is the `REMOTE_ACCESS_TOKEN` secret in `.env` (not `config.ini`). Configured values require at least 24 characters.
+
+> `public_base_url` may not contain credentials, a query, or a fragment. Plain HTTP tokenizes access but does not encrypt traffic; prefer a private VPN or an HTTPS reverse proxy.
 
 ## `metadata`
 
-Metadata providers never delay HTTP startup. ROM Relay always shows local
-filename/header metadata first and enriches non-patched games in the background.
-Provider errors preserve the previous SQLite metadata and cached artwork. The
-public catalog polls `/healthz` for live background state and shows platform
-fallback covers until validated box art is cached. Libretro uses two DAT workers
-and three enrichment/artwork workers; IGDB requests remain serialized. The
-scheduler checks hourly, but healthy provider data is not refreshed until
-`metadata_refresh_days`; interrupted or offline refreshes become retry-eligible
-at the next hourly check instead of being treated as fresh.
+Metadata providers never delay HTTP startup. ROM Relay always shows local filename/header metadata first and enriches non-patched games in the background. Provider errors preserve the previous SQLite metadata and cached artwork. The public catalog polls `/healthz` for live background state and shows platform fallback covers until validated box art is cached. Libretro uses two DAT workers and three enrichment/artwork workers; IGDB requests remain serialized. The scheduler checks hourly, but healthy provider data is not refreshed until `metadata_refresh_days`; interrupted or offline refreshes become retry-eligible at the next hourly check instead of being treated as fresh.
 
 ### Libretro setup
 
 Libretro is enabled by default and needs no account or API key:
 
-```json
-"metadata": {
-  "libretro": {
-    "enabled": true,
-    "database_directory": "metadata/libretro/databases",
-    "thumbnail_directory": "metadata/libretro/thumbnails",
-    "auto_update": true,
-    "download_thumbnails": true
-  },
-  "igdb": {
-    "enabled": false,
-    "client_id": "",
-    "client_secret": ""
-  }
-}
+```ini
+[metadata.libretro]
+enabled = true
+database_directory = metadata/libretro/databases
+thumbnail_directory = metadata/libretro/thumbnails
+auto_update = true
+download_thumbnails = true
+
+[metadata.igdb]
+enabled = false
+# client_id and client_secret come from .env (IGDB_CLIENT_ID / IGDB_CLIENT_SECRET)
 ```
 
-With `auto_update: true`, ROM Relay retrieves the plain Libretro DAT sources for
-GB, GBC, GBA, NDS, 3DS, NES, SNES, N64, and Genesis from the official
-`libretro-database` GitHub repository. Each response is size-bounded and written
-to a temporary file before publication. Each platform's parsed SQLite index is
-replaced in one transaction; an interrupted or failed update leaves that
-platform's previous index usable.
+With `auto_update = true`, ROM Relay retrieves the plain Libretro DAT sources for GB, GBC, GBA, NDS, 3DS, NES, SNES, N64, and Genesis from the official `libretro-database` GitHub repository. Each response is size-bounded and written to a temporary file before publication. Each platform's parsed SQLite index is replaced in one transaction; an interrupted or failed update leaves that platform's previous index usable.
 
-Matching is platform-constrained: SHA-1 first, then MD5, then CRC32. If every
-hash misses, a same-platform exact case-insensitive full release filename is
-allowed. There is no partial or fuzzy filename match. The fallback is important
-for converted 3DS/CIA containers and ROMs whose display title was shortened by
-GB/GBC/GBA/NDS cartridge headers. An unmatched game keeps its locally parsed
-metadata. Cached box art is decoded, format/dimension/size validated, stored
-under `thumbnail_directory`, and served by ROM Relay rather than hot-linked.
+Matching is platform-constrained: SHA-1 first, then MD5, then CRC32. If every hash misses, a same-platform exact case-insensitive full release filename is allowed. There is no partial or fuzzy filename match. The fallback is important for converted 3DS/CIA containers and ROMs whose display title was shortened by GB/GBC/GBA/NDS cartridge headers. An unmatched game keeps its locally parsed metadata. Cached box art is decoded, format/dimension/size validated, stored under `thumbnail_directory`, and served by ROM Relay rather than hot-linked.
 
-Libretro supplies identification, release fields, and artwork names, but not
-prose descriptions. Enable the optional IGDB provider for game synopses.
+Libretro supplies identification, release fields, and artwork names, but not prose descriptions. Enable the optional IGDB provider for game synopses.
 
-For a network-isolated installation, set `auto_update` and
-`download_thumbnails` to `false`. Place clrmamepro-format files in this layout:
+For a network-isolated installation, set `auto_update = false` and `download_thumbnails = false`. Place clrmamepro-format files in this layout:
 
 ```text
 metadata/libretro/databases/
@@ -191,8 +152,8 @@ not ROM verification; Libretro remains the exact identification source.
    confidential application in the Twitch Developer Console. `localhost` is a
    suitable OAuth redirect URL because ROM Relay uses the client-credentials
    flow.
-2. Copy the application's Client ID and generated Client Secret into
-   `metadata.igdb` and set `enabled` to `true`.
+2. Set `IGDB_CLIENT_ID` and `IGDB_CLIENT_SECRET` in `.env`, and set
+   `enabled = true` under `[metadata.igdb]` in `config.ini`.
 3. Restart ROM Relay. It obtains short-lived Twitch access tokens in memory,
    groups up to ten games from one platform into each slug-filtered
    `/v4/games` request, keeps HTTP calls below the official
@@ -210,18 +171,42 @@ matches, exact misses, throttles, and failures. IGDB title comparison removes
 Unicode combining marks so accented provider names such as `Pokémon` still
 match an otherwise exact local `Pokemon` title.
 
-```json
-"igdb": {
-  "enabled": true,
-  "client_id": "your-twitch-client-id",
-  "client_secret": "your-twitch-client-secret"
-}
+```ini
+# config.ini
+[metadata.igdb]
+enabled = true
 ```
 
-Protect `config.json` as a secret when IGDB is enabled. ROM Relay requires an
+```env
+# .env
+IGDB_CLIENT_ID=your-twitch-client-id
+IGDB_CLIENT_SECRET=your-twitch-client-secret
+```
+
+Keep `.env` readable only by the ROM Relay service account. ROM Relay requires an
 exact normalized title from IGDB's platform-filtered results and does not accept
 the first fuzzy result. Patched games are excluded from Libretro and IGDB by the
 database query itself and by a second provider-side guard.
+
+### Optional PokeAPI setup
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Fills the Pokédex with species detail, evolution requirements, and wild encounters. |
+| `data_directory` | `third_party/api-data/data/api/v2` | An on-disk [PokeAPI/api-data](https://github.com/PokeAPI/api-data) endpoint tree. When it exists, the fill reads from disk and never touches the network. |
+
+```ini
+[metadata.pokeapi]
+enabled = false
+data_directory = third_party/api-data/data/api/v2
+```
+
+The api-data checkout is a git submodule: run `git submodule update --init`
+to fetch it. The Docker deployment bind-mounts it read-only and points
+`data_directory` at the mount, so the fill is fully offline there. Without
+the checkout, the fill falls back to `pokeapi.co` (no credentials required),
+runs once in the background, and is then offline; the Pokédex works without
+it either way, showing whatever the local game data already supplies.
 
 The private admin workspace also contains **Edit game metadata**. It can replace
 all user-facing text fields and a PNG/JPEG/WebP cover for any game, or remove a
@@ -261,29 +246,35 @@ you administer, following romPad's search-and-stream interaction model. ROM
 Relay never contacts a public ROM catalog and never downloads unless an
 administrator explicitly selects a result.
 
-```json
-"remote_search": {
-  "enabled": true,
-  "host": "sftp.example.internal",
-  "port": 22,
-  "username": "romrelay-readonly",
-  "password": "use-a-dedicated-strong-password",
-  "root_directory": "/srv/rom-library",
-  "host_key_sha256": "SHA256:replace-with-the-verified-fingerprint",
-  "max_results": 200,
-  "max_file_size_mb": 4096,
-  "platform_directories": {
-    "gb": "gb",
-    "gbc": "gbc",
-    "gba": "gba",
-    "nds": "nds",
-    "3ds": "3ds",
-    "nes": "nes",
-    "snes": "snes",
-    "n64": "n64",
-    "genesis": "genesis"
-  }
-}
+```ini
+# config.ini
+[remote_search]
+enabled = true
+host = sftp.example.internal
+port = 22
+username = romrelay-readonly
+root_directory = /srv/rom-library
+host_key_sha256 = SHA256:replace-with-the-verified-fingerprint
+max_results = 200
+max_file_size_mb = 4096
+
+# Optional per-platform directory overrides. When present this section fully
+# replaces the built-in defaults, so list every platform you use.
+[remote_search.platforms]
+gb = gb
+gbc = gbc
+gba = gba
+nds = nds
+3ds = 3ds
+nes = nes
+snes = snes
+n64 = n64
+genesis = genesis
+```
+
+```env
+# .env
+REMOTE_SEARCH_PASSWORD=use-a-dedicated-strong-password
 ```
 
 Use a dedicated, read-only SFTP account restricted to `root_directory`. Obtain
@@ -297,9 +288,9 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 Do not trust an unverified `ssh-keyscan` result by itself; compare any scanned
 key through a separate trusted channel. ROM Relay refuses the connection when
 the presented key differs from `host_key_sha256`. The host, username, password,
-and remote paths are never placed in download URLs, logs, or SQLite, but the
-password remains plaintext in `config.json`, so restrict that file to the ROM
-Relay service account.
+and remote paths are never placed in download URLs, logs, or SQLite. The
+password lives in `.env` (`REMOTE_SEARCH_PASSWORD`), so restrict that file to the
+ROM Relay service account.
 
 `root_directory` must be an absolute SFTP path. Each relative
 `platform_directories` value is joined beneath it. Omit a platform mapping to
@@ -332,18 +323,42 @@ also require CSRF. Catalog viewers can download a completed external artifact
 and scan its QR, but cannot browse the SFTP server, start a transfer, retain a
 file, or choose its destination.
 
-## `patching`
+## `[storage]`
 
-| Field | Default | Meaning |
+| Key | Default | Meaning |
+|---|---:|---|
+| `save_directory` | `storage/saves` | Users' uploaded game saves, stored as `<owner-id>/<save-id>.sav`. Created automatically. |
+
+Saves are uploaded from a game's page in the library, from the Living Dex, or
+from the Save Data view (waffle → Save Data), and belong to the signed-in user.
+Every upload is kept as a new version, so re-uploading never overwrites earlier
+progress; the newest version is what the download button returns.
+
+Only save *metadata* (game, size, hash, timestamp, and any Pokémon details)
+lives in the database, the bytes are files. **A backup must cover this
+directory as well as the database**, or restoring leaves rows pointing at saves
+that no longer exist. In Docker this path is `/app/data/storage/saves`, held in
+the `romrelay-storage` volume.
+
+Uploads are capped at 16 MB and require a signed-in session. A save the PKHeX
+sidecar recognises also updates that user's Living Dex; a save it cannot read
+(any non-Pokémon game) is still stored, and the response says so.
+
+## `[patching]`
+
+| Key | Default | Meaning |
 |---|---:|---|
 | `enabled` | `true` | Enables the private patch workspace URL. |
 | `patch_directory` | `patches` | Temporary/legacy root patch inbox; supported files older than `retention_hours` are pruned. |
 | `output_directory` | `patched` | Platform-shaped patched output tree. |
-| `admin_access_token` | generated per run | Separate administrator secret; configured values require 24 characters. |
 | `retention_hours` | `24` | Temporary patched-output lifetime, reset by completed downloads. |
 | `max_rom_size_mb` | `512` | Patch-job source/output limit. |
 | `max_patch_size_mb` | `64` | Patch upload/local-file limit. |
 | `timeout_seconds` | `120` | Patch execution timeout. |
+
+The administrator secret is the `ADMIN_ACCESS_TOKEN` secret in `.env` (not
+`config.ini`). Configured values require at least 24 characters and must differ
+from `REMOTE_ACCESS_TOKEN`; blank generates a fresh token each run.
 
 Viewer and administrator tokens must differ. The workspace indexes all nine
 supported extensions and applies them through embedded RomPatcher.js in an
@@ -353,7 +368,7 @@ roughly three times the source size in free memory.
 
 Permanent self-supplied patches live under
 `platforms/<platform>/patches/<recipe>/`, not the root inbox. Each supported
-patch file is hashed and assigned a stable content-derived `patch-…` ID. ROM
+patch file is hashed and assigned a stable content-derived `patch-<hash>` ID. ROM
 Relay indexes UPS/BPS embedded source checksums automatically. An optional
 `recipe.json` in the same directory supplies an explicit clean-base fingerprint
 and friendly defaults:
@@ -386,12 +401,10 @@ are written only to the distinct `rom_patch = TRUE` game after atomic output
 publication. They survive checksum-mismatch confirmation in the private job
 directory and are removed with an expired or discarded patched game.
 
-## Legacy configuration
+## Migrating from earlier configurations
 
-Former CornTool v1 files are accepted with a migration warning and run through
-the retained CIA/FBI compatibility flow in Corn Mode. New installations should
-use the nested v2 configuration from `config.example.json`.
-
-Early ROM Relay v2 files containing `screenscraper` are intentionally rejected
-as unknown strict-v2 configuration. Replace that object with the `metadata`
-object above; ScreenScraper credentials are no longer used.
+The former single `config.json` and the legacy CornTool v1 configuration are no
+longer read. Move settings into `config.ini` (mirroring the sections above) and
+the four secrets into `.env`. Start from `config.example.ini` and `.env.example`.
+`boot9_path` and `screenscraper` are not accepted; place boot9 files under
+`internal/drivers/3ds` and use `[metadata]` instead.

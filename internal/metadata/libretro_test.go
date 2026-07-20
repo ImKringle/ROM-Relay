@@ -53,6 +53,9 @@ func TestOfflineLibretroMatchAndPatchedGuard(t *testing.T) {
 	if err = store.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if err = store.HashPending(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
 	h1, hm := sha1.Sum(rom), md5.Sum(rom)
 	dat := fmt.Sprintf(`clrmamepro ( name "Nintendo - Game Boy Advance" ) game ( name "Fixture Adventure (USA)" region "USA" rom ( name "Fixture.gba" size %d crc %08X md5 %s sha1 %s ) )`, len(rom), crc32.ChecksumIEEE(rom), strings.ToUpper(hex.EncodeToString(hm[:])), strings.ToUpper(hex.EncodeToString(h1[:])))
 	// Real Libretro DATs occasionally contain byte-identical duplicate rows.
@@ -91,6 +94,9 @@ func TestOfflineLibretroMatchAndPatchedGuard(t *testing.T) {
 		t.Fatalf("matched=%d, patched provider guard failed", matched)
 	}
 	if err = store.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.HashPending(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	games, _ := store.Games(context.Background())

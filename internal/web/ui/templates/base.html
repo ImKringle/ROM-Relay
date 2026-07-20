@@ -1,0 +1,105 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="{{if eq .Theme "corn"}}#141008{{else}}#080b12{{end}}">
+{{with .CSRF}}<meta name="csrf-token" content="{{.}}">{{end}}
+{{/* htmx injects a <style> element for .htmx-indicator unless told not to, and
+     style-src 'self' blocks it on every page. The equivalent rules live in
+     app.css instead, so the indicator still works with no inline exemption. */}}
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<title>{{block "title" .}}{{.Copy.Brand}}{{end}} · {{.Copy.Brand}}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/logo/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/logo/favicon-180.png">
+<link rel="stylesheet" href="/assets/app.css">
+<script defer src="/assets/app.js"></script>
+</head>
+<body class="{{.Theme}}">
+
+{{/* Bare pages (sign-in, first boot, forced password change) show the brand but
+     no navigation: every tool it would link is either unreachable or would
+     bounce the visitor straight back here. */}}
+<header class="topnav">
+  <a class="brand" href="/{{.Token}}">
+    <span class="brand-emblem"><img src="/assets/logo/brand.png" width="44" height="44" alt=""></span>
+    <span class="brand-label">{{.Copy.Brand}}</span>
+  </a>
+
+  {{if not .Bare}}
+  <nav class="topnav-links ml-2" id="site-nav" aria-label="Tools">
+    {{range .Tools}}
+    {{if eq (len .Children) 0}}
+    <a class="topnav-link" href="{{.Route}}{{$.Token}}" {{if navActive $.Path .}}aria-current="page"{{end}}>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="{{.Icon}}"/></svg>
+      {{.Name}}
+    </a>
+    {{else if eq (len .Children) 1}}
+    {{$group := .}}
+    {{with index .Children 0}}
+    <a class="topnav-link" href="{{.Route}}{{$.Token}}" {{if navActive $.Path .}}aria-current="page"{{end}}>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="{{$group.Icon}}"/></svg>
+      {{$group.Name}}
+    </a>
+    {{end}}
+    {{else}}
+    {{/* Never server-rendered open: the whole nav sits collapsed behind the
+         hamburger button (see .topnav-links above) even when the current page
+         is one of this group's children, aria-current on the summary below
+         is what marks that, not a pre-expanded submenu waiting behind it. */}}
+    <details class="topnav-group">
+      <summary class="topnav-link" {{if navActive $.Path .}}aria-current="page"{{end}}>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="{{.Icon}}"/></svg>
+        {{.Name}}
+      </summary>
+      <div class="topnav-group-menu">
+        {{range .Children}}
+        <a class="topnav-link" href="{{.Route}}{{$.Token}}" {{if navActive $.Path .}}aria-current="page"{{end}}>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="{{.Icon}}"/></svg>
+          {{.Name}}
+        </a>
+        {{end}}
+      </div>
+    </details>
+    {{end}}
+    {{end}}
+  </nav>
+
+  <div class="ml-auto flex items-center gap-2">
+    {{if .User}}
+    <span class="hidden items-center gap-1.5 text-sm text-[var(--color-text)] sm:inline-flex">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a5 5 0 0 1 5 5c0 2.8-2.2 5-5 5s-5-2.2-5-5a5 5 0 0 1 5-5Z M4 21c.8-3.6 4-6 8-6s7.2 2.4 8 6"/></svg>
+      {{.User.Username}}
+    </span>
+    <a class="button button--small" href="/logout">Sign out</a>
+    {{else}}
+    <a class="button button--small" href="/login">Sign in</a>
+    {{end}}
+    <details class="topnav-group topnav-activity" id="activity-widget">
+      <summary class="topnav-link" id="activity-toggle" aria-label="Background activity">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.4"/>
+          <path d="M12 7.4v4.6l3 2"/>
+          <path d="M12 2.6v1.3M12 20.1v1.3M2.6 12h1.3M20.1 12h1.3M5.4 5.4l.9.9M17.7 17.7l.9.9M5.4 18.6l.9-.9M17.7 6.3l.9-.9"/>
+        </svg>
+      </summary>
+      <div class="topnav-group-menu topnav-activity-menu" id="activity-list">
+        <p class="topnav-activity-empty" id="activity-empty">Nothing running.</p>
+      </div>
+    </details>
+    <button class="button button--small topnav-menu-button" type="button" data-nav-toggle
+            aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </div>
+  {{else}}
+  <span class="ml-auto eyebrow eyebrow--muted">Self-hosted library</span>
+  {{end}}
+</header>
+
+<main id="main" class="px-[clamp(14px,4vw,40px)] py-[clamp(16px,3vw,32px)]">
+  {{block "content" .}}{{end}}
+</main>
+
+</body>
+</html>{{end}}

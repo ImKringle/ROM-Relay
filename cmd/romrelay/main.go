@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -26,8 +27,13 @@ import (
 	"romrelay/internal/decryptor"
 	"romrelay/internal/metadata"
 	patcher "romrelay/internal/patch"
+	"romrelay/internal/pokedex"
+	"romrelay/internal/pokemon"
+	"romrelay/internal/pokemonvault"
 	"romrelay/internal/presentation"
 	remotelib "romrelay/internal/remote"
+	"romrelay/internal/savevault"
+	"romrelay/internal/threedscrypt"
 	webui "romrelay/internal/web"
 )
 
@@ -43,170 +49,69 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// healthProbe queries the local health endpoint and returns nil when the server
+// is responding. Any HTTP status below 500 counts as healthy, a token-protected
+// deployment answers /healthz with 401, which still proves the process is up.
+// Designed for a container HEALTHCHECK where no shell or curl is available.
+func healthProbe(cfg config.Config) error {
+	host := cfg.Server.ListenAddress
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	url := fmt.Sprintf("http://%s/healthz", net.JoinHostPort(host, fmt.Sprint(cfg.Server.Port)))
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("health endpoint returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func run() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	defaultConfig := filepath.Join(filepath.Dir(exe), "config.json")
-	configPath := flag.String("config", defaultConfig, "path to JSON configuration")
+	configDir := flag.String("config-dir", filepath.Dir(exe), "directory containing config.ini and .env")
+	healthcheck := flag.Bool("healthcheck", false, "probe the local health endpoint and exit 0/1 (for container HEALTHCHECK)")
 	flag.Parse()
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(*configDir)
 	if err != nil {
 		return err
 	}
-	theme := cfg.UITheme
-	if cfg.Legacy {
-		theme = "corn"
+	if *healthcheck {
+		return healthProbe(cfg)
 	}
+	theme := cfg.UITheme
 	var operator *dashboard.Dashboard
-	out, errOut := os.Stdout, os.Stderr
 	var present *presentation.Presenter
-	if !cfg.Legacy && dashboard.TerminalAvailable(os.Stdin, os.Stdout) {
+	if dashboard.TerminalAvailable(os.Stdin, os.Stdout) {
 		operator = dashboard.New(theme)
 		operator.Start()
 		present = presentation.New(theme, operator, operator)
 		present.SetLiveSink(operator)
 	} else {
-		present = presentation.New(theme, out, errOut)
+		present = presentation.New(theme, os.Stdout, os.Stderr)
 	}
 	activePresenter = present
-	if !cfg.Legacy {
-		runErr := runV2(cfg, present, filepath.Join(filepath.Dir(exe), "internal", "drivers"), operator)
-		if operator != nil {
-			runErr = errors.Join(runErr, operator.Stop())
-			activePresenter = presentation.New(theme, os.Stdout, os.Stderr)
-		}
-		return runErr
-	}
 	for _, warning := range cfg.Warnings {
-		present.Warning("%s", "Old recipe detected: %s", warning)
+		present.Warning("%s", "%s", warning)
 	}
-	conv, err := converter.New(cfg.Boot9Path)
-	if err != nil {
-		return err
+	runErr := runV2(cfg, present, filepath.Join(filepath.Dir(exe), "internal", "drivers"), operator, *configDir)
+	if operator != nil {
+		runErr = errors.Join(runErr, operator.Stop())
+		activePresenter = presentation.New(theme, os.Stdout, os.Stderr)
 	}
-	stage := filepath.Join(cfg.ServeDirectory, ".corntool-staging")
-	if err = os.MkdirAll(stage, 0700); err != nil {
-		return fmt.Errorf("create private staging directory: %w", err)
-	}
-	entries, err := os.ReadDir(cfg.InputDirectory)
-	if err != nil {
-		return err
-	}
-	found := 0
-	failed := 0
-	skipped := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if ext != ".3ds" && ext != ".cci" {
-			continue
-		}
-		found++
-		src := filepath.Join(cfg.InputDirectory, e.Name())
-		dst := filepath.Join(cfg.ServeDirectory, strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))+".cia")
-		if _, statErr := os.Stat(dst); statErr == nil {
-			present.Info("Skipping %s: output already exists", "Skipping ear %s: cob already exists", e.Name())
-			skipped++
-			continue
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			present.Error("Failed %s: inspect output: %v", "Spoiled ear %s: inspect cob: %v", e.Name(), statErr)
-			failed++
-			continue
-		}
-		tmp, err := os.CreateTemp(stage, "harvest-*.tmp")
-		if err != nil {
-			return err
-		}
-		tmpPath := tmp.Name()
-		tmp.Close()
-		os.Remove(tmpPath)
-		present.Info("Converting %s", "Shucking %s", e.Name())
-		conversionProgress := present.NewConversion()
-		err = conv.Convert(context.Background(), src, tmpPath, func(part string, done, total int64) {
-			conversionProgress.Update(part, done, total)
-		})
-		conversionProgress.Stop(err != nil)
-		if err != nil {
-			os.Remove(tmpPath)
-			present.Error("Conversion failed for %s: %v", "Ear %s fell off the wagon: %v", e.Name(), err)
-			failed++
-			continue
-		}
-		if err = os.Rename(tmpPath, dst); err != nil {
-			os.Remove(tmpPath)
-			present.Error("Failed to publish %s: %v", "Could not stack cob %s: %v", e.Name(), err)
-			failed++
-			continue
-		}
-		present.Success("Ready: %s", "Fresh cob ready: %s", filepath.Base(dst))
-	}
-	if found == 0 {
-		present.Info("No .3ds or .cci inputs found", "No .3ds or .cci ears found in the field")
-	}
-	present.Summary("Conversion report", "Harvest report", presentation.Row{Label: "Inputs", Value: fmt.Sprint(found)}, presentation.Row{Label: "Failed", Value: fmt.Sprint(failed)}, presentation.Row{Label: "Skipped", Value: fmt.Sprint(skipped)})
-	ip, err := webui.AdvertiseIP(cfg.AdvertiseIP, cfg.ListenAddress)
-	if err != nil {
-		return err
-	}
-	base := fmt.Sprintf("http://%s:%d", ip, cfg.AdvertisePort)
-	token := cfg.RemoteToken
-	parsedIP := net.ParseIP(ip)
-	publicEndpoint := parsedIP != nil && !parsedIP.IsPrivate() && !parsedIP.IsLoopback()
-	if publicEndpoint && token == "" {
-		token, err = generateToken()
-		if err != nil {
-			return fmt.Errorf("generate remote access token: %w", err)
-		}
-	}
-	files, err := webui.Discover(cfg.ServeDirectory, base, token)
-	if err != nil {
-		return err
-	}
-	if len(files) == 0 {
-		return errors.New("empty husk: no validated existing or newly converted CIA is available")
-	}
-	for _, f := range files {
-		if f.Large {
-			present.Warning("%s is at least 4 GiB; FBI may reject its 32-bit size", "%s is a giant cob (at least 4 GiB); FBI may reject it", f.Name)
-		}
-	}
-	ui, err := webui.New(files, base, token)
-	if err != nil {
-		return err
-	}
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.ListenAddress, cfg.Port), Handler: ui.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	serverErr := make(chan error, 1)
-	go func() { serverErr <- srv.ListenAndServe() }()
-	accessURL := base
-	if token != "" {
-		accessURL += "/?token=" + url.QueryEscape(token)
-	}
-	present.Summary("ROM Relay server", "Corn stand is open", presentation.Row{Label: "Catalog", Value: accessURL}, presentation.Row{Label: "FBI", Value: "Scan an individual or batch QR"}, presentation.Row{Label: "Stop", Value: "Ctrl+C"})
-	if publicEndpoint {
-		present.Warning("Public endpoint enabled; expose only this port and protect the token", "Corn stand faces the public road; guard the gate and secret token")
-	}
-	select {
-	case <-stop:
-		present.Info("Shutting down ROM Relay", "Packing up the corn stand")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(ctx)
-	case err := <-serverErr:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
+	return runErr
 }
 
-func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory string, operator *dashboard.Dashboard) (retErr error) {
-	store, err := catalog.Open(cfg.DatabasePath, cfg.LibraryDirectory)
+func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory string, operator *dashboard.Dashboard, configDir string) (retErr error) {
+	store, err := catalog.Open(cfg.DatabaseDSN(), cfg.LibraryDirectory)
 	if err != nil {
 		return fmt.Errorf("open catalog: %w", err)
 	}
@@ -214,16 +119,30 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	store.AddArtifactRoot(cfg.Patching.OutputDirectory)
 	externalRoot := filepath.Join(cfg.LibraryDirectory, "external", "antisocial-expert")
 	store.AddExternalArtifactRoot(externalRoot)
-	ip, err := webui.AdvertiseIP(cfg.Server.AdvertiseIP, cfg.Server.ListenAddress)
-	if err != nil {
-		return err
+	// Results from the Game Library's ad-hoc convert/encrypt/decrypt uploads:
+	// a normal, temporary (expiring-unless-retained) artifact root, the same
+	// shape a patch job's output already is.
+	uploadResultsDir := filepath.Join(cfg.Patching.OutputDirectory, ".upload-results")
+	if err := os.MkdirAll(uploadResultsDir, 0700); err != nil {
+		return fmt.Errorf("create upload-results directory: %w", err)
 	}
+	store.AddArtifactRoot(uploadResultsDir)
+	if err := seedAdmin(context.Background(), store, cfg, present); err != nil {
+		return fmt.Errorf("initialize admin account: %w", err)
+	}
+	// A configured public_base_url takes precedence and makes LAN-adapter
+	// detection unnecessary, important in containers, where auto-detection is
+	// ambiguous or finds only the compose-network address.
 	base := strings.TrimRight(cfg.Server.PublicBaseURL, "/")
 	if base == "" {
+		ip, err := webui.AdvertiseIP(cfg.Server.AdvertiseIP, cfg.Server.ListenAddress)
+		if err != nil {
+			return err
+		}
 		base = fmt.Sprintf("http://%s:%d", ip, cfg.Server.AdvertisePort)
 	}
 	viewerToken := cfg.Server.RemoteAccessToken
-	boot9Path := fixedBoot9(filepath.Join(driverDirectory, "boot9-3ds"))
+	boot9Path := fixedBoot9(filepath.Join(driverDirectory, "3ds"))
 	adminToken := cfg.Patching.AdminAccessToken
 	if cfg.Patching.Enabled && adminToken == "" {
 		adminToken, err = generateToken()
@@ -232,7 +151,11 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		}
 	}
 	ui := webui.NewCatalog(store, base, viewerToken, cfg.UITheme, adminToken, cfg.Patching.PatchDirectory, time.Duration(cfg.Patching.RetentionHours)*time.Hour)
-	ui.SetReady(false, "Scanning library")
+	ui.SetReady(false, "Indexing library")
+	store.SetScanProgress(func(files int, _ int64) {
+		message := fmt.Sprintf("Indexing library, %d files", files)
+		ui.SetScanStage(message)
+	})
 	ui.SetDownloadObserver(func(event webui.DownloadEvent) {
 		switch event.Status {
 		case "started":
@@ -243,8 +166,33 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 			present.Warning("Download stopped: %s to %s (%d/%d bytes)", "Corn delivery stopped: %s to %s (%d/%d kernels)", event.Name, event.RemoteIP, event.Written, event.Expected)
 		}
 	})
+	ui.SetConfig(cfg, configDir)
 	ui.SetIGDBEnabled(cfg.Metadata.IGDB.Enabled)
 	ui.SetMediaDirectory(cfg.Metadata.Libretro.ThumbnailDirectory)
+	ui.SetUploadResultsDir(uploadResultsDir)
+	if cfg.PokemonSidecarURL != "" {
+		ui.SetPokemonClient(pokemon.NewClient(cfg.PokemonSidecarURL))
+		present.Info("Pokémon save ingestion enabled (sidecar %s)", "Poké save shucking enabled (sidecar %s)", cfg.PokemonSidecarURL)
+	}
+	if cfg.NDecryptSidecarURL != "" {
+		ui.SetCryptClient(threedscrypt.NewClient(cfg.NDecryptSidecarURL))
+		present.Info("3DS/DS encrypt-decrypt upload enabled (sidecar %s)", "3DS/DS crypt-shucking enabled (sidecar %s)", cfg.NDecryptSidecarURL)
+	}
+	// The save vault works without the sidecar: saves are stored either way, and
+	// a recognised Pokémon save additionally feeds the Dex.
+	if err := os.MkdirAll(cfg.SaveDirectory, 0o755); err != nil {
+		return fmt.Errorf("create save directory: %w", err)
+	}
+	ui.SetSaveVault(savevault.NewDirectoryVault(cfg.SaveDirectory))
+	// Every ingested Pokémon also gets a standalone .pkm file (see the
+	// PokeHome design doc), a sibling of the save vault directory rather
+	// than its own config key, the same derived-not-configured choice the
+	// save vault's own directory made before it.
+	pokemonDir := filepath.Join(filepath.Dir(cfg.SaveDirectory), "pokemon")
+	if err := os.MkdirAll(pokemonDir, 0o755); err != nil {
+		return fmt.Errorf("create pokemon directory: %w", err)
+	}
+	ui.SetPokemonVault(pokemonvault.NewDirectoryVault(pokemonDir))
 	store.SetArtworkDirectory(cfg.Metadata.Libretro.ThumbnailDirectory)
 	var metadataDisplayMu sync.RWMutex
 	var metadataDisplay *presentation.Metadata
@@ -289,6 +237,29 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	if cfg.Metadata.IGDB.Enabled {
 		igdbProvider = metadata.NewIGDB(store, metadata.IGDBOptions{ClientID: cfg.Metadata.IGDB.ClientID, ClientSecret: cfg.Metadata.IGDB.ClientSecret, ThumbnailDirectory: cfg.Metadata.Libretro.ThumbnailDirectory, ROMProgress: reportROMMetadata})
 	}
+	// Pokédex reference data: a one-time fill of static species/evolution data.
+	// It never blocks the catalog, and the Dex works without it.
+	var pokedexIngest *pokedex.Ingest
+	if cfg.Metadata.PokeAPI.Enabled {
+		// The on-disk api-data checkout is preferred: same JSON, versioned, no
+		// network. The live API remains the fallback for checkouts without the
+		// submodule.
+		var dexClient *pokedex.Client
+		source := "PokeAPI"
+		if info, statErr := os.Stat(cfg.Metadata.PokeAPI.DataDirectory); statErr == nil && info.IsDir() {
+			dexClient = pokedex.NewLocalClient(cfg.Metadata.PokeAPI.DataDirectory)
+			source = "local PokeAPI data"
+		}
+		pokedexIngest = pokedex.New(store, pokedex.Options{
+			Client: dexClient,
+			Progress: func(done, total int) {
+				ui.SetBackground("pokedex_metadata", webui.BackgroundJob{
+					Active: done < total, Recent: done >= total,
+					Message: "Pokédex data from " + source, Done: int64(done), Total: int64(total),
+				})
+			},
+		})
+	}
 	decryptWork := filepath.Join(cfg.Patching.OutputDirectory, ".decrypt-jobs")
 	if err = os.MkdirAll(decryptWork, 0700); err != nil {
 		return fmt.Errorf("create CIA decrypt staging: %w", err)
@@ -329,6 +300,34 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		conversionProgress.Stop(err != nil)
 		return err
 	})
+	ui.SetConvertUpload(func(convertCtx context.Context, name string, data []byte, progress func(string, int64, int64)) ([]byte, error) {
+		conv, err := converter.New(boot9Path)
+		if err != nil {
+			return nil, err
+		}
+		in, err := os.CreateTemp(uploadResultsDir, "in-*"+strings.ToLower(filepath.Ext(name)))
+		if err != nil {
+			return nil, err
+		}
+		inPath := in.Name()
+		defer os.Remove(inPath)
+		if _, err = in.Write(data); err != nil {
+			in.Close()
+			return nil, err
+		}
+		if err = in.Close(); err != nil {
+			return nil, err
+		}
+		outPath := inPath + ".cia"
+		defer os.Remove(outPath)
+		if err = conv.Convert(convertCtx, inPath, outPath, progress); err != nil {
+			return nil, err
+		}
+		if err = converter.Validate(outPath); err != nil {
+			return nil, err
+		}
+		return os.ReadFile(outPath)
+	})
 	srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	var workers sync.WaitGroup
 	startWorker := func(fn func()) {
@@ -351,6 +350,11 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		})
 	}
 	cleanup := func() {
+		// Expired sessions are rows nothing will ever read again; without this
+		// they accumulated forever (the method existed but was never called).
+		if err := store.CleanupExpiredSessions(ctx); err != nil && ctx.Err() == nil {
+			present.Warning("Session cleanup will retry: %v", "Session cleanup will try again: %v", err)
+		}
 		deleted, deferred, failures := store.CleanupExpired(ctx)
 		if deleted > 0 || deferred > 0 {
 			present.Info("Retention cleanup: %d deleted, %d deferred", "Corn crib cleanup: %d stale cobs removed, %d still being carried", deleted, deferred)
@@ -415,7 +419,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 						failed += n
 					}
 				}
-				present.Info("%s results: %d ROMs — %d matched, %d no exact match, %d rate limited, %d failed", "%s harvest: %d ears — %d named, %d unnamed, %d throttled, %d failed", provider, total, counts["matched"], counts["no exact match"], counts["rate limited"], failed)
+				present.Info("%s results: %d ROMs, %d matched, %d no exact match, %d rate limited, %d failed", "%s harvest: %d ears, %d named, %d unnamed, %d throttled, %d failed", provider, total, counts["matched"], counts["no exact match"], counts["rate limited"], failed)
 			}
 			ui.ClearBackgroundPrefix("ROM · ")
 			ui.SetBackground("metadata", webui.BackgroundJob{Active: false, Message: "metadata sweep complete"})
@@ -471,6 +475,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		scanMu.Lock()
 		defer scanMu.Unlock()
 		ui.SetScanState(true, nil)
+		started := time.Now()
 		e := store.Reconcile(ctx)
 		if errors.Is(e, context.Canceled) {
 			ui.SetScanState(false, nil)
@@ -480,13 +485,56 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		if e != nil {
 			present.Error("Catalog reconciliation failed: %v", "Corn crib count failed: %v", e)
 		} else if games, e := store.Games(ctx); e == nil {
-			present.Success("Catalog ready: %d games", "Corn crib stocked: %d games", len(games))
+			present.Success("Catalog ready: %d games (%s)", "Corn crib stocked: %d games (%s)", len(games), time.Since(started).Round(time.Millisecond))
+		}
+	}
+	var hashMu sync.Mutex
+	hashPending := func() {
+		hashMu.Lock()
+		defer hashMu.Unlock()
+		started := time.Now()
+		var lastHashLog time.Time
+		var hashedAny bool
+		var lastTotal int
+		var lastBytes int64
+		err := store.HashPending(ctx, func(done, total int, hashedBytes int64) {
+			hashedAny = true
+			lastTotal, lastBytes = total, hashedBytes
+			message := fmt.Sprintf("Hashing ROMs, %d/%d, %.1f GB", done, total, float64(hashedBytes)/(1<<30))
+			ui.SetBackground("hashing", webui.BackgroundJob{Active: true, Message: message, Done: int64(done), Total: int64(total)})
+			if time.Since(lastHashLog) >= 5*time.Second {
+				lastHashLog = time.Now()
+				elapsed := time.Since(started)
+				rate := float64(hashedBytes) / elapsed.Seconds() / (1 << 20)
+				present.Info("%s (%s elapsed, %.1f MB/s avg)", "%s (%s elapsed, %.1f MB/s avg)", message, elapsed.Round(time.Second), rate)
+			}
+		})
+		ui.SetBackground("hashing", webui.BackgroundJob{Active: false, Message: "library hashing complete"})
+		if err != nil && ctx.Err() == nil {
+			present.Warning("Library hashing will retry: %v", "Corn tallying will retry: %v", err)
+		} else if err == nil && hashedAny {
+			present.Success("Library hashing complete: %d files, %.1f GB (%s)", "Corn tally complete: %d ears, %.1f GB (%s)",
+				lastTotal, float64(lastBytes)/(1<<30), time.Since(started).Round(time.Millisecond))
 		}
 	}
 	initialCatalog := make(chan struct{})
 	startWorker(func() {
 		reconcile()
 		close(initialCatalog)
+	})
+	// Content hashing runs after the fast header index, in the background, so the
+	// catalog is browsable immediately. Smallest files are hashed first, so
+	// metadata for most of a library fills in quickly. Metadata enrichment waits
+	// on this because it matches by hash.
+	initialHash := make(chan struct{})
+	startWorker(func() {
+		defer close(initialHash)
+		select {
+		case <-initialCatalog:
+		case <-ctx.Done():
+			return
+		}
+		hashPending()
 	})
 	initialConversion := make(chan struct{})
 	startWorker(func() {
@@ -496,7 +544,9 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		case <-ctx.Done():
 			return
 		}
-		ui.SetReady(false, "Checking 3DS conversion queue")
+		// Conversion runs after the catalog is already servable; report it as a
+		// background job only. It must not call SetReady(false), that would race
+		// with the readiness worker and knock a serving catalog back offline.
 		ui.SetBackground("conversion", webui.BackgroundJob{Active: true, Message: "checking 3DS conversion queue"})
 		err := convertV2(ctx, cfg, boot9Path, present, func(name, part string, done, total int64) {
 			message := name
@@ -504,7 +554,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 				message += " · " + part
 			}
 			ui.SetBackground("conversion", webui.BackgroundJob{Active: true, Message: message, Done: done, Total: total})
-		}, func(string) { reconcile() })
+		}, func(string) { reconcile(); hashPending() })
 		if err != nil {
 			if ctx.Err() == nil {
 				present.Error("3DS conversion failed: %v", "3DS harvest failed: %v", err)
@@ -514,8 +564,10 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	})
 	if libretroProvider != nil || igdbProvider != nil {
 		startWorker(func() {
+			// Metadata matches by content hash, so wait for the background hash
+			// pass rather than the header index.
 			select {
-			case <-initialCatalog:
+			case <-initialHash:
 			case <-ctx.Done():
 				return
 			}
@@ -539,6 +591,50 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 			}
 		})
 	}
+	if pokedexIngest != nil {
+		// The run-once worker and the hourly ticker share this, exactly as the
+		// metadata sweep does: a first fill slower than an hour would otherwise
+		// have the tick start a second ingest alongside it.
+		var pokedexMu sync.Mutex
+		refreshPokedex := func() {
+			pokedexMu.Lock()
+			defer pokedexMu.Unlock()
+			started := time.Now()
+			stored, ingestErr := pokedexIngest.Run(ctx, pokedex.MaxDex)
+			switch {
+			case ingestErr != nil && ctx.Err() == nil:
+				present.Warning("Pokédex data will retry: %v", "The Pokédex will fill later: %v", ingestErr)
+			case ingestErr == nil && stored > 0:
+				present.Success("Pokédex data stored for %d species (%s)", "Pokédex data stored for %d ears (%s)", stored, time.Since(started).Round(time.Millisecond))
+			}
+		}
+		startWorker(func() {
+			// Pokédex reference data is keyed by dex number, not ROM content hash,
+			// and has nothing to do with the ROM library. It only needs the
+			// catalog to exist so the web UI is up, not a full hash pass.
+			select {
+			case <-initialCatalog:
+			case <-ctx.Done():
+				return
+			}
+			refreshPokedex()
+		})
+		startWorker(func() {
+			// Same hourly recovery wake-up as the ROM metadata providers, for
+			// interrupted/offline runs. Run() is resumable and skips species it
+			// already stored, so a healthy re-run is cheap.
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					refreshPokedex()
+				}
+			}
+		})
+	}
 	if cfg.LibraryScanIntervalHours > 0 {
 		startWorker(func() {
 			ticker := time.NewTicker(time.Duration(cfg.LibraryScanIntervalHours) * time.Hour)
@@ -549,6 +645,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 					return
 				case <-ticker.C:
 					reconcile()
+					hashPending()
 				}
 			}
 		})
@@ -578,16 +675,16 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	}
 	adminURL := base + "/admin/patches?admin_token=" + url.QueryEscape(adminToken)
 	startWorker(func() {
-		for _, stage := range []struct {
-			wait  <-chan struct{}
-			label string
-		}{{initialCatalog, "Preparing catalog"}, {initialConversion, "Finishing 3DS conversions"}, {initialPatchIndex, "Indexing patch recipes"}} {
-			ui.SetReady(false, stage.label)
-			select {
-			case <-stage.wait:
-			case <-ctx.Done():
-				return
-			}
+		// The catalog is gated only on the initial library scan. 3DS conversion
+		// and patch-recipe indexing can take a long time on a large library
+		// (multi-gigabyte 3DS images over a slow bind mount) and continue in the
+		// background with progress shown in the catalog header; blocking the whole
+		// site on them made a fresh boot with a big library look hung.
+		ui.SetReady(false, "Preparing catalog")
+		select {
+		case <-initialCatalog:
+		case <-ctx.Done():
+			return
 		}
 		ui.SetReady(true, "ready")
 		present.Summary("ROM Relay ready", "ROM Relay corn stand", presentation.Row{Label: "Theme", Value: cfg.UITheme}, presentation.Row{Label: "Catalog", Value: viewerURL}, presentation.Row{Label: "Library", Value: cfg.LibraryDirectory})
@@ -705,7 +802,12 @@ func convertV2(ctx context.Context, cfg config.Config, boot9Path string, present
 			}
 		}
 	}
-	return filepath.WalkDir(sourceRoot, func(path string, d os.DirEntry, walkErr error) error {
+
+	// Gather the queue first, the same shape catalog.HashPending indexes
+	// pending files before hashing them: a cheap directory walk plus a stat
+	// per candidate, so what follows is only real conversion work.
+	var pending []string
+	walkErr := filepath.WalkDir(sourceRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -733,44 +835,110 @@ func convertV2(ctx context.Context, cfg config.Config, boot9Path string, present
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		tmp, err := os.CreateTemp(stage, "convert-*.tmp")
-		if err != nil {
-			return err
-		}
-		tmpPath := tmp.Name()
-		tmp.Close()
-		os.Remove(tmpPath)
-		present.Info("Converting %s to encrypted CIA", "Shucking %s into an encrypted CIA cob", d.Name())
-		if status != nil {
-			status(d.Name(), "preparing", 0, 0)
-		}
-		conversionProgress := present.NewConversion()
-		if err = conv.Convert(ctx, path, tmpPath, func(part string, done, total int64) {
-			conversionProgress.Update(part, done, total)
-			if status != nil {
-				status(d.Name(), part, done, total)
-			}
-		}); err != nil {
-			conversionProgress.Stop(true)
-			os.Remove(tmpPath)
-			present.Error("Conversion failed for %s: %v", "Ear %s spoiled during shucking: %v", d.Name(), err)
-			return nil
-		}
-		conversionProgress.Stop(false)
-		if err = converter.Validate(tmpPath); err != nil {
-			os.Remove(tmpPath)
-			return fmt.Errorf("validate generated %s: %w", d.Name(), err)
-		}
-		if err = os.Rename(tmpPath, dst); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
-		present.Success("Ready: %s", "Fresh encrypted cob ready: %s", filepath.Base(dst))
-		if ready != nil {
-			ready(dst)
-		}
+		pending = append(pending, path)
 		return nil
 	})
+	if walkErr != nil {
+		return walkErr
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	// Conversion is CPU-bound (AES-CTR plus SHA-256 over every byte) and disk
+	// I/O bound, the same profile as ROM hashing, so it fans out across the
+	// same GOMAXPROCS-bounded worker pool shape as catalog.HashPending and
+	// pokedex.Ingest.runParallel (GOMAXPROCS, not NumCPU, so this stays correct
+	// under a container CPU quota). converter.Converter carries no mutable
+	// state across Convert calls, and each file gets its own temp path and its
+	// own *presentation.Conversion tracker, so workers never share write targets.
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(pending) {
+		workers = len(pending)
+	}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				if err := convertOne(ctx, conv, path, outputRoot, stage, present, status, ready); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+			}
+		}()
+	}
+feed:
+	for _, path := range pending {
+		select {
+		case jobs <- path:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
+}
+
+// convertOne converts a single 3DS/CCI ROM to an encrypted CIA. It is the
+// per-file body convertV2's worker pool runs concurrently: every path it
+// touches (the temp file, the destination, the progress tracker) is unique to
+// this one file, so no coordination with other in-flight conversions is
+// needed beyond what ready (reconcile + hash) already serializes internally.
+func convertOne(ctx context.Context, conv *converter.Converter, path, outputRoot, stage string, present *presentation.Presenter, status func(name, part string, done, total int64), ready func(path string)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name := filepath.Base(path)
+	dst := filepath.Join(outputRoot, strings.TrimSuffix(name, filepath.Ext(name))+".cia")
+	tmp, err := os.CreateTemp(stage, "convert-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	os.Remove(tmpPath)
+	present.Info("Converting %s to encrypted CIA", "Shucking %s into an encrypted CIA cob", name)
+	if status != nil {
+		status(name, "preparing", 0, 0)
+	}
+	conversionProgress := present.NewConversion()
+	if err = conv.Convert(ctx, path, tmpPath, func(part string, done, total int64) {
+		conversionProgress.Update(part, done, total)
+		if status != nil {
+			status(name, part, done, total)
+		}
+	}); err != nil {
+		conversionProgress.Stop(true)
+		os.Remove(tmpPath)
+		present.Error("Conversion failed for %s: %v", "Ear %s spoiled during shucking: %v", name, err)
+		return nil
+	}
+	conversionProgress.Stop(false)
+	if err = converter.Validate(tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("validate generated %s: %w", name, err)
+	}
+	if err = os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	present.Success("Ready: %s", "Fresh encrypted cob ready: %s", filepath.Base(dst))
+	if ready != nil {
+		ready(dst)
+	}
+	return nil
 }
 
 func convertCatalogArtifact(ctx context.Context, cfg config.Config, boot9Path string, store *catalog.Store, artifactID string, progress converter.Progress) (err error) {
@@ -840,6 +1008,46 @@ func fixedBoot9(directory string) string {
 		}
 	}
 	return ""
+}
+
+// seedAdmin ensures the built-in admin account exists and has a password.
+// ADMIN_PASSWORD (when set) is applied every start so it can be reset; otherwise
+// a password is generated and printed once on first run, and left untouched
+// thereafter.
+func seedAdmin(ctx context.Context, store *catalog.Store, cfg config.Config, present *presentation.Presenter) error {
+	id, err := store.EnsureDefaultUser(ctx)
+	if err != nil {
+		return err
+	}
+	admin, err := store.UserByUsername(ctx, "admin")
+	if err != nil {
+		return err
+	}
+	switch {
+	case cfg.AdminPassword != "":
+		hash, err := webui.HashPassword(cfg.AdminPassword)
+		if err != nil {
+			return err
+		}
+		if err := store.SetUserPassword(ctx, id, hash, false); err != nil {
+			return err
+		}
+		present.Info("Admin login ready (user: admin), password from ADMIN_PASSWORD", "Silo login ready (user: admin), password from ADMIN_PASSWORD")
+	case admin.PasswordHash == "":
+		password, err := generateToken()
+		if err != nil {
+			return err
+		}
+		hash, err := webui.HashPassword(password)
+		if err != nil {
+			return err
+		}
+		if err := store.SetUserPassword(ctx, id, hash, false); err != nil {
+			return err
+		}
+		present.Warning("Generated admin login, user: admin, password: %s (set ADMIN_PASSWORD to choose your own)", "Generated silo login, user: admin, password: %s", password)
+	}
+	return nil
 }
 
 func generateToken() (string, error) {

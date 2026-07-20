@@ -1,0 +1,20 @@
+{
+  "name": "romrelay-ui",
+  "private": true,
+  "description": "Author-time build for ROM Relay's UI. Never runs in the container: the built CSS/JS in internal/web/ui/dist is committed and embedded in the Go binary, so `go build` and the Docker image need no Node.",
+  "scripts": {
+    "build": "npm run build:css && npm run build:js && npm run manifest",
+    "build:css": "tailwindcss -i internal/web/ui/src/app.css -o internal/web/ui/dist/app.css --minify",
+    "build:js": "esbuild internal/web/ui/src/app.js --bundle --minify --target=es2019 --outfile=internal/web/ui/dist/app.js",
+    "manifest": "node scripts/ui-manifest.mjs",
+    "watch": "tailwindcss -i internal/web/ui/src/app.css -o internal/web/ui/dist/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "esbuild": "0.28.1",
+    "tailwindcss": "4.3.3"
+  },
+  "dependencies": {
+    "htmx.org": "2.0.10"
+  }
+}

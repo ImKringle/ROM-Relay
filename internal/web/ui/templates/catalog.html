@@ -1,0 +1,289 @@
+{{define "catalog"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Library{{end}}
+
+{{define "content"}}
+<div class="hero mb-3 p-[clamp(18px,3.5vw,32px)]">
+  <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Game Library</h1>
+</div>
+
+{{/* Sibling tool bars, one row on desktop and stacked on mobile (same
+     max-[820px]: convention the rest of this page already uses), the 3DS
+     Batch Installer, the FTP push, the upload-based conversion/crypt tools,
+     and adding a ROM straight into the Library, each opening its own modal. */}}
+<div class="mb-5 grid grid-cols-5 gap-3 max-[820px]:grid-cols-2 max-[420px]:grid-cols-1">
+  <div class="surface p-3" data-fbi-bar hidden>
+    <button class="button button--primary w-full justify-center" type="button" data-fbi-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h3M20 14v3M14 20h6"/></svg>
+      3DS Batch Installer
+    </button>
+  </div>
+  <div class="surface p-3">
+    <button class="button button--primary w-full justify-center" type="button" data-ftp-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 11v6m0-6 3 3m-3-3-3 3"/></svg>
+      Send via FTP
+    </button>
+  </div>
+  {{if .ConvertAvailable}}
+  <div class="surface p-3">
+    <button class="button button--primary w-full justify-center" type="button" data-convert-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      Convert .3ds/.cci to CIA
+    </button>
+  </div>
+  {{end}}
+  {{if .CryptAvailable}}
+  <div class="surface p-3">
+    <button class="button button--primary w-full justify-center" type="button" data-crypt-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/><path d="M9.5 12h5M12 9.5v5"/></svg>
+      Encrypt / Decrypt
+    </button>
+  </div>
+  {{end}}
+  <div class="surface p-3">
+    <button class="button button--primary w-full justify-center" type="button" data-upload-rom-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      Upload ROM
+    </button>
+  </div>
+</div>
+
+{{if .RemoteURL}}
+{{/* The library has nothing for this search and a remote source is configured,
+     so offer the one action that could actually find it. */}}
+<div class="surface mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
+  <p class="m-0 text-sm text-[var(--color-muted)]">Nothing in the local library matches that search.</p>
+  <a class="button button--primary" href="{{.RemoteURL}}">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.3-4.3"/></svg>
+    Search Remotely
+  </a>
+</div>
+{{end}}
+
+{{/* Only reachable under 820px: CSS hides it once the sidebar has room. */}}
+<button class="button mb-3 hidden max-[820px]:inline-flex" type="button" data-filters-toggle aria-expanded="false" aria-controls="filters">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+  Filters{{if .Filter.Active}} <span class="badge badge--accent">{{.Filter.Active}}</span>{{end}}
+</button>
+
+<div class="layout--catalog grid grid-cols-[250px_minmax(0,1fr)] items-start gap-6">
+  {{template "filters" .}}
+  <div>
+    <div id="grid-busy" class="htmx-indicator text-sm text-[var(--color-muted)]">Filtering…</div>
+    {{template "game-grid" .}}
+  </div>
+</div>
+
+{{/* The game modal: a card click fetches /games/{id} and htmx selects
+     #game-view into the body below, so the library stays underneath. The same
+     URL still renders as a full page for direct visits and with JS off. */}}
+<div class="modal-scrim" id="game-modal" data-game-modal>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Game details">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]" id="game-modal-body"></div>
+  </div>
+</div>
+
+{{/* 3DS Batch Installer: a modal of selectable cover cards, filterable by
+     platform (defaults to 3DS-only, that's the tab FBI can actually install
+     from). Opened by the button below the header, which app.js reveals once
+     it finds any installable artifacts. */}}
+<div class="modal-scrim" id="fbi-modal" data-fbi>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fbi-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <span class="eyebrow">FBI · Remote install</span>
+      <h2 class="m-0 mt-1 text-xl" id="fbi-title">3DS Batch Installer</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Pick ROMs to send. Encrypted 3DS CIAs scan straight into FBI as a QR batch or over port 5000; other platforms are listed for reference but FBI can't install them.</p>
+
+      {{if .Facets.Platforms}}
+      <div class="mt-3 flex flex-wrap gap-1.5" data-fbi-platforms>
+        {{range .Facets.Platforms}}
+        <button class="chip{{if eq .Value "3ds"}} chip--active{{end}}" type="button" data-fbi-platform="{{.Value}}">
+          <span>{{.Label}}</span>
+        </button>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div class="mt-3 flex flex-wrap items-center gap-2" data-fbi-actions>
+        <button class="button" type="button" data-fbi-all>Select all</button>
+        <button class="button button--primary" type="button" data-fbi-qr hidden>Build batch QR</button>
+        <span class="ml-auto text-xs text-[var(--color-muted)]" data-fbi-count></span>
+      </div>
+
+      <div class="my-3 grid max-h-[45vh] grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2.5 overflow-y-auto pr-1" data-fbi-list></div>
+
+      <div class="flex flex-wrap items-center gap-2" data-fbi-actions>
+        <button class="button" type="button" data-fbi-all>Select all</button>
+        <button class="button button--primary" type="button" data-fbi-qr hidden>Build batch QR</button>
+        <span class="ml-auto text-xs text-[var(--color-muted)]" data-fbi-count></span>
+      </div>
+
+      <form class="mt-2 flex flex-wrap gap-2" data-fbi-send>
+        <input class="field max-w-xs" name="target" placeholder="FBI device IP, e.g. 192.168.1.55" aria-label="FBI device IP">
+        <button class="button">Send selected CIAs to FBI port 5000</button>
+      </form>
+      <div class="mt-3 flex flex-wrap gap-4 text-sm" data-fbi-output aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
+{{/* Send via FTP: any artifact, any platform, pushed to a homebrew FTP
+     server (e.g. ftpd) running on the user's own console. Unlike FBI above,
+     there's no installable-format restriction, it's a plain file copy, so
+     the platform chips default to none active (show everything) and the
+     format tag is just the extension, no lock/warn styling. The remote
+     directory browser is new UI: currentPath is an opaque string the server
+     echoes back, tracked entirely client-side in wireFTPSend. */}}
+<div class="modal-scrim" id="ftp-modal" data-ftp>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ftp-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <span class="eyebrow">FTP · Remote transfer</span>
+      <h2 class="m-0 mt-1 text-xl" id="ftp-title">Send via FTP</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Pick files, connect to the FTP server running on your console (e.g. ftpd on 3DS/NDS), browse to a folder, and send them over.</p>
+
+      {{if .Facets.Platforms}}
+      <div class="mt-3 flex flex-wrap gap-1.5" data-ftp-platforms>
+        {{range .Facets.Platforms}}
+        <button class="chip" type="button" data-ftp-platform="{{.Value}}">
+          <span>{{.Label}}</span>
+        </button>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <button class="button" type="button" data-ftp-all>Select all</button>
+        <span class="ml-auto text-xs text-[var(--color-muted)]" data-ftp-count></span>
+      </div>
+
+      <div class="my-3 grid max-h-[35vh] grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2.5 overflow-y-auto pr-1" data-ftp-list></div>
+
+      <div class="surface p-3">
+        <h3 class="m-0 text-sm font-semibold">Connect</h3>
+        <form class="mt-2 grid gap-2.5 sm:grid-cols-4" data-ftp-connect>
+          <label class="grid gap-1 sm:col-span-2">
+            <span class="text-xs text-[var(--color-muted)]">Host</span>
+            <input class="field" name="host" placeholder="192.168.1.55" required aria-label="FTP host">
+          </label>
+          <label class="grid gap-1">
+            <span class="text-xs text-[var(--color-muted)]">Port</span>
+            <input class="field" name="port" placeholder="5000" aria-label="FTP port">
+          </label>
+          <label class="grid gap-1">
+            <span class="text-xs text-[var(--color-muted)]">User</span>
+            <input class="field" name="user" placeholder="anonymous" aria-label="FTP username">
+          </label>
+          <label class="grid gap-1 sm:col-span-3">
+            <span class="text-xs text-[var(--color-muted)]">Password</span>
+            <input class="field" type="password" name="pass" aria-label="FTP password">
+          </label>
+          <div class="flex items-end">
+            <button class="button button--primary w-full justify-center" type="submit">Connect</button>
+          </div>
+        </form>
+
+        <div class="mt-3" data-ftp-browser hidden>
+          <div class="flex flex-wrap items-center gap-2 text-sm">
+            <span class="text-[var(--color-muted)]">Folder:</span>
+            <code class="text-xs" data-ftp-path>/</code>
+          </div>
+          <div class="mt-2 grid max-h-[30vh] gap-0.5 overflow-y-auto rounded-lg border border-[var(--color-line)] p-1" data-ftp-entries></div>
+        </div>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <button class="button button--primary" type="button" data-ftp-send hidden>Send selected files here</button>
+      </div>
+      <div class="mt-3 grid gap-1 text-sm" data-ftp-output aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
+{{if .ConvertAvailable}}
+{{/* Ad-hoc 3DS/CCI -> CIA conversion: upload once, poll the job, then a
+     download link + QR appear the same way the game page's own "Direct link
+     & QR" does, see wireUploadTool in library.js. */}}
+<div class="modal-scrim" id="convert-modal" data-convert>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="convert-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <span class="eyebrow">3DS · Convert</span>
+      <h2 class="m-0 mt-1 text-xl" id="convert-title">Convert .3ds/.cci to CIA</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Upload a raw 3DS cart dump, or pick one already in the Library. It converts to an encrypted CIA you can download or scan as a QR code.</p>
+      <div class="flex flex-wrap gap-1.5" data-convert-source>
+        <button class="chip chip--active" type="button" data-source-pick="upload">Upload a file</button>
+        <button class="chip" type="button" data-source-pick="library">From Library</button>
+      </div>
+      <form class="mt-3 grid gap-3" data-convert-form>
+        <input class="field" type="file" name="rom" accept=".3ds,.cci" required aria-label="ROM file to convert" data-source-upload>
+        <select class="field" name="artifact_id" aria-label="Library ROM to convert" data-source-library hidden></select>
+        <label class="flex items-center gap-2.5 text-sm">
+          <input class="size-4" type="checkbox" name="retain" value="true">
+          <span>Keep this permanently on ROM Relay; otherwise it's removed after 24 hours.</span>
+        </label>
+        <button class="button button--primary" type="submit">Convert</button>
+      </form>
+      <div class="mt-3 text-sm" data-convert-out aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{if .CryptAvailable}}
+{{/* Ad-hoc encrypt/decrypt: NDecrypt for raw .nds/.3ds-family cart dumps (both
+     directions), the existing Redux driver for .cia (decrypt only). Direction
+     is auto-detected server-side; the direction picker only appears when the
+     server reports a genuine mix it cannot resolve on its own. */}}
+<div class="modal-scrim" id="crypt-modal" data-crypt>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="crypt-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <span class="eyebrow">3DS/DS · Encrypt or decrypt</span>
+      <h2 class="m-0 mt-1 text-xl" id="crypt-title">Encrypt / Decrypt</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Upload a .nds/.srl/.dsi/.ids or .3ds/.cci cart dump (either direction) or a .cia (decrypt only), or pick one already in the Library. The direction is detected automatically from the file itself.</p>
+      <div class="flex flex-wrap gap-1.5" data-crypt-source>
+        <button class="chip chip--active" type="button" data-source-pick="upload">Upload a file</button>
+        <button class="chip" type="button" data-source-pick="library">From Library</button>
+      </div>
+      <form class="mt-3 grid gap-3" data-crypt-form>
+        <input class="field" type="file" name="rom" accept=".nds,.srl,.dsi,.ids,.3ds,.cci,.cia" required aria-label="File to encrypt or decrypt" data-source-upload>
+        <select class="field" name="artifact_id" aria-label="Library file to encrypt or decrypt" data-source-library hidden></select>
+        <label class="flex items-center gap-2.5 text-sm">
+          <input class="size-4" type="checkbox" name="retain" value="true">
+          <span>Keep this permanently on ROM Relay; otherwise it's removed after 24 hours.</span>
+        </label>
+        <button class="button button--primary" type="submit">Run</button>
+      </form>
+      <div class="mt-3 flex flex-wrap items-center gap-2" data-crypt-direction hidden>
+        <span class="text-sm text-[var(--color-muted)]">This file has a mix of encrypted and decrypted content. Pick a direction:</span>
+        <button class="button" type="button" data-crypt-direction-pick="decrypt">Decrypt</button>
+        <button class="button" type="button" data-crypt-direction-pick="encrypt">Encrypt</button>
+      </div>
+      <div class="mt-3 text-sm" data-crypt-out aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{/* Upload ROM: adds a file straight into the Library without needing sftp
+     access. Scanned and hashed immediately (see createLibraryUpload); cover
+     art and other metadata follow on the next scheduled sweep. */}}
+<div class="modal-scrim" id="upload-rom-modal" data-upload-rom>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="upload-rom-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <span class="eyebrow">Library</span>
+      <h2 class="m-0 mt-1 text-xl" id="upload-rom-title">Upload ROM</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Add a ROM straight into the Library. It's scanned and hashed right away; artwork and other metadata load in shortly after.</p>
+      <form class="mt-3 grid gap-3" data-upload-rom-form>
+        <input class="field" type="file" name="rom" required aria-label="ROM file to add">
+        <button class="button button--primary" type="submit">Upload</button>
+      </form>
+      <div class="mt-3 text-sm" data-upload-rom-out aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+{{end}}

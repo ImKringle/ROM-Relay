@@ -1,0 +1,33 @@
+{{/* The upload control, shared by the Dex, Save Data, and game pages.
+
+     There is no game picker: the save states which game it is and the server
+     reads it, so asking the uploader to find the right ROM in a list was asking
+     them to repeat what the file already says. A game page passes its own id as
+     a fallback for saves nothing can read (the vault takes any save, not just
+     Pokémon ones).
+
+     "Game" is the optional id; "Intro" is the sentence above the control. */}}
+{{define "save-upload"}}
+<section class="surface p-4" data-upload-panel {{with .Game}}data-upload-game-id="{{.}}"{{end}}>
+  <div class="flex items-center gap-2">
+    <svg class="icon text-[var(--color-accent)]" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+    <h2 class="m-0 text-base">Upload a save</h2>
+  </div>
+  <p class="my-2 text-sm text-[var(--color-muted)]">{{.Intro}}</p>
+
+  {{/* A label pointing at a visually-hidden input: a bare <input type=file>
+       styled like a text field did not read as something you press. This is a
+       real button, and the chosen filename is shown beside it. */}}
+  <div class="flex flex-col items-start gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+    <label class="button cursor-pointer">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5zM8 4v6h7V4M8 20v-6h8v6"/></svg>
+      Choose save files
+      <input class="sr-only" type="file" data-upload-file multiple>
+    </label>
+    <span class="text-sm text-[var(--color-muted)]" data-upload-name>No file chosen</span>
+    <button class="button button--primary sm:ml-auto" type="button" data-upload-send>Upload save</button>
+  </div>
+
+  <p class="mt-2 min-h-[1.2em] text-sm text-[var(--color-muted)]" data-upload-out aria-live="polite"></p>
+</section>
+{{end}}

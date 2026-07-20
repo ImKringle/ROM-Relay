@@ -1,60 +1,67 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestLoad(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
-	body := fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q}`, d, d)
-	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+// writeINI writes config.ini into a fresh temp directory and returns the dir.
+func writeINI(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.ini"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := Load(p)
+	return dir
+}
+
+func TestLoadDefaultsFromMissingFile(t *testing.T) {
+	// An empty directory (no config.ini, no .env) must yield documented defaults.
+	c, err := Load(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Port != 8080 || c.AdvertisePort != 8080 || c.ListenAddress != "0.0.0.0" || c.ExistingOutput != "skip" {
+	if c.LibraryScanIntervalHours != 1 || c.MetadataRefreshDays != 30 || c.Server.Port != 8080 ||
+		c.Server.ListenAddress != "0.0.0.0" || c.UITheme != "default" || c.ExistingOutput != "skip" ||
+		!c.Patching.Enabled || !c.Metadata.Libretro.Enabled || !c.Metadata.Libretro.AutoUpdate ||
+		!c.Metadata.Libretro.DownloadThumbnails {
 		t.Fatalf("defaults not applied: %+v", c)
 	}
 }
+
 func TestLoadRejectsInvalid(t *testing.T) {
-	d := t.TempDir()
-	for _, body := range []string{fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q,"port":70000}`, d, d), fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q,"advertise_port":70000}`, d, d), fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q,"remote_access_token":"short"}`, d, d), fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q,"advertise_ip":"::1"}`, d, d), fmt.Sprintf(`{"input_directory":%q,"serve_directory":%q} {}`, d, d)} {
-		p := filepath.Join(d, "c.json")
-		os.WriteFile(p, []byte(body), 0600)
-		if _, err := Load(p); err == nil {
-			t.Fatalf("accepted %s", body)
+	for _, body := range []string{
+		"[server]\nport = 70000\n",
+		"[server]\nadvertise_port = 70000\n",
+		"[server]\nport = not-a-number\n",
+		"[patching]\nenabled = maybe\n",
+		"[server]\nlisten_address = not-an-ip\n",
+		"[server\nport = 8080\n",   // malformed section header
+		"listen_address 0.0.0.0\n", // missing '='
+	} {
+		if _, err := Load(writeINI(t, body)); err == nil {
+			t.Fatalf("accepted invalid config:\n%s", body)
 		}
 	}
 }
 
-func TestLoadV2DefaultsAndExplicitDisabledScan(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
-	if err := os.WriteFile(p, []byte(`{}`), 0600); err != nil {
-		t.Fatal(err)
+func TestRemoteAccessTokenTooShortRejected(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REMOTE_ACCESS_TOKEN", "short")
+	if _, err := Load(dir); err == nil {
+		t.Fatal("accepted a remote_access_token shorter than 24 characters")
 	}
-	c, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Legacy || c.LibraryScanIntervalHours != 1 || c.MetadataRefreshDays != 30 || c.Server.Port != 8080 || c.UITheme != "default" || !c.Patching.Enabled || !c.Metadata.Libretro.Enabled || !c.Metadata.Libretro.AutoUpdate || !c.Metadata.Libretro.DownloadThumbnails {
-		t.Fatalf("bad v2 defaults: %+v", c)
-	}
-	if err := os.WriteFile(p, []byte(`{"library_scan_interval_hours":0,"patching":{"enabled":false}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	c, err = Load(p)
+}
+
+func TestExplicitDisabledScanAndPatching(t *testing.T) {
+	dir := writeINI(t, "[library]\nscan_interval_hours = 0\n\n[patching]\nenabled = false\n")
+	c, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.LibraryScanIntervalHours != 0 {
-		t.Fatalf("explicit zero became %d", c.LibraryScanIntervalHours)
+		t.Fatalf("explicit zero scan interval became %d", c.LibraryScanIntervalHours)
 	}
 	if c.Patching.Enabled {
 		t.Fatal("explicit patching disable was ignored")
@@ -62,47 +69,67 @@ func TestLoadV2DefaultsAndExplicitDisabledScan(t *testing.T) {
 }
 
 func TestMetadataConfigAndIGDBCredentials(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
-	os.WriteFile(p, []byte(`{"metadata":{"libretro":{"enabled":false,"auto_update":false,"download_thumbnails":false},"igdb":{"enabled":true}}}`), 0600)
-	if _, err := Load(p); err == nil {
-		t.Fatal("enabled IGDB accepted without credentials")
+	body := "[metadata.libretro]\nenabled = false\nauto_update = false\ndownload_thumbnails = false\n\n[metadata.igdb]\nenabled = true\n"
+	// IGDB enabled without credentials must degrade (disable + warn), not fail,
+	// so a restart-looping container does not crash-loop on a missing secret.
+	degraded, err := Load(writeINI(t, body))
+	if err != nil {
+		t.Fatalf("IGDB without credentials should degrade, not error: %v", err)
 	}
-	os.WriteFile(p, []byte(`{"metadata":{"libretro":{"enabled":false,"auto_update":false,"download_thumbnails":false},"igdb":{"enabled":true,"client_id":"id","client_secret":"secret"}}}`), 0600)
-	c, err := Load(p)
+	if degraded.Metadata.IGDB.Enabled {
+		t.Fatal("IGDB should be disabled when credentials are missing")
+	}
+	if len(degraded.Warnings) == 0 {
+		t.Fatal("expected a warning when IGDB is disabled for missing credentials")
+	}
+	dir := writeINI(t, body)
+	t.Setenv("IGDB_CLIENT_ID", "id")
+	t.Setenv("IGDB_CLIENT_SECRET", "secret")
+	c, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Metadata.Libretro.Enabled || c.Metadata.Libretro.AutoUpdate || c.Metadata.Libretro.DownloadThumbnails || !c.Metadata.IGDB.Enabled {
+	if c.Metadata.Libretro.Enabled || c.Metadata.Libretro.AutoUpdate || c.Metadata.Libretro.DownloadThumbnails ||
+		!c.Metadata.IGDB.Enabled || c.Metadata.IGDB.ClientID != "id" || c.Metadata.IGDB.ClientSecret != "secret" {
 		t.Fatalf("explicit metadata settings changed: %+v", c.Metadata)
 	}
 }
 
 func TestRemoteSearchRequiresPinnedHostKey(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
-	os.WriteFile(p, []byte(`{"remote_search":{"enabled":true,"host":"sftp.example","username":"user","password":"secret"}}`), 0600)
-	if _, err := Load(p); err == nil {
+	t.Setenv("REMOTE_SEARCH_PASSWORD", "secret")
+	body := "[remote_search]\nenabled = true\nhost = sftp.example\nusername = user\n"
+	if _, err := Load(writeINI(t, body)); err == nil {
 		t.Fatal("remote search accepted without pinned host key")
 	}
-	os.WriteFile(p, []byte(`{"remote_search":{"enabled":true,"host":"sftp.example","username":"user","password":"secret","host_key_sha256":"SHA256:fixture"}}`), 0600)
-	c, err := Load(p)
+	dir := writeINI(t, body+"host_key_sha256 = SHA256:fixture\n")
+	c, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.RemoteSearch.Enabled || c.RemoteSearch.Port != 22 || c.RemoteSearch.MaxResults != 200 {
+	if !c.RemoteSearch.Enabled || c.RemoteSearch.Port != 22 || c.RemoteSearch.MaxResults != 200 ||
+		c.RemoteSearch.Password != "secret" {
 		t.Fatalf("bad remote defaults: %+v", c.RemoteSearch)
 	}
 }
 
+func TestRemoteSearchPlatformDirectories(t *testing.T) {
+	t.Setenv("REMOTE_SEARCH_PASSWORD", "secret")
+	body := "[remote_search]\nenabled = true\nhost = sftp.example\nusername = user\nhost_key_sha256 = SHA256:fixture\n\n[remote_search.platforms]\ngba = games/gba\nnds = games/nds\n"
+	c, err := Load(writeINI(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RemoteSearch.PlatformDirectories["gba"] != "games/gba" || c.RemoteSearch.PlatformDirectories["nds"] != "games/nds" {
+		t.Fatalf("platform directories not read: %+v", c.RemoteSearch.PlatformDirectories)
+	}
+	if _, ok := c.RemoteSearch.PlatformDirectories["3ds"]; ok {
+		t.Fatal("an explicit platform map must not inherit defaults")
+	}
+}
+
 func TestThemeIsStrictAndReadAtLoad(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
 	for _, theme := range []string{"default", "corn"} {
-		if err := os.WriteFile(p, []byte(fmt.Sprintf(`{"ui_theme":%q}`, theme)), 0600); err != nil {
-			t.Fatal(err)
-		}
-		c, err := Load(p)
+		c, err := Load(writeINI(t, "[library]\nui_theme = "+theme+"\n"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,17 +137,84 @@ func TestThemeIsStrictAndReadAtLoad(t *testing.T) {
 			t.Fatalf("got %q", c.UITheme)
 		}
 	}
-	os.WriteFile(p, []byte(`{"ui_theme":"maize"}`), 0600)
-	if _, err := Load(p); err == nil {
+	if _, err := Load(writeINI(t, "[library]\nui_theme = maize\n")); err == nil {
 		t.Fatal("accepted unknown theme")
 	}
 }
 
-func TestV2RejectsFormerBoot9ConfigField(t *testing.T) {
-	d := t.TempDir()
-	p := filepath.Join(d, "config.json")
-	os.WriteFile(p, []byte(`{"boot9_path":"private.bin"}`), 0600)
-	if _, err := Load(p); err == nil {
-		t.Fatal("v2 accepted configurable boot9 path")
+func TestRejectsFormerBoot9ConfigField(t *testing.T) {
+	if _, err := Load(writeINI(t, "[library]\nboot9_path = private.bin\n")); err == nil {
+		t.Fatal("accepted a configurable boot9 path")
+	}
+}
+
+func TestShippedExampleLoads(t *testing.T) {
+	// The example shipped to users must parse and validate as-is.
+	body, err := os.ReadFile(filepath.Join("..", "..", "config.example.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.ini"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("shipped config.example.ini failed to load: %v", err)
+	}
+	if c.Server.Port != 8080 || !c.Patching.Enabled {
+		t.Fatalf("unexpected values from example: %+v", c)
+	}
+}
+
+func TestEnvironmentWinsOverEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("IGDB_CLIENT_ID=from-file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.ini"), []byte("[metadata.igdb]\nenabled = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("IGDB_CLIENT_ID", "from-env")
+	t.Setenv("IGDB_CLIENT_SECRET", "secret")
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Metadata.IGDB.ClientID != "from-env" {
+		t.Fatalf("process environment must win over .env file, got %q", c.Metadata.IGDB.ClientID)
+	}
+}
+
+func TestPokeAPIProviderIsOffUnlessEnabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.ini"), []byte(`
+[library]
+directory = platforms
+
+[metadata.pokeapi]
+enabled = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Metadata.PokeAPI.Enabled {
+		t.Fatal("[metadata.pokeapi] enabled=true must switch the provider on")
+	}
+
+	// The default must be off: enrichment reaches out to the internet, and a
+	// relay on a closed LAN should not try unless asked.
+	if err := os.WriteFile(filepath.Join(dir, "config.ini"), []byte("[library]\ndirectory = platforms\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Metadata.PokeAPI.Enabled {
+		t.Fatal("the PokeAPI provider must default to off")
 	}
 }

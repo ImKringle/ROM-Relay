@@ -1,0 +1,1453 @@
+@import "tailwindcss";
+
+/* Templates are the only place classes appear; Tailwind v4 needs to be told to
+   scan them since they are not .js/.ts files. */
+@source "../templates/**/*.html";
+@source "../../*.go";
+@source "./*.js";
+
+/* The display face. Served same-origin from /assets/fonts (default-src 'self'
+   covers it), used only for the brand, eyebrows, and dex numbers, at body
+   sizes a pixel font is unreadable. */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/press-start-2p-latin.woff2") format("woff2");
+}
+
+/* Design tokens, the Harvest system, in two palettes.
+   The base tokens are the "default" theme: the original dark-blue scheme.
+   body.corn re-values the same tokens with the corn palette, kernel gold on
+   roasted-brown husk surfaces. Every colour in the UI comes from these
+   variables, so the two themes share one set of components and layouts.
+
+   --color-well is the recessed slot behind box art / code blocks;
+   --color-on-accent is text sitting on an accent fill;
+   --color-scrim / --color-glow / --color-dot are the backdrop pieces. */
+@theme {
+  --color-bg: #080b12;
+  --color-surface: #111827;
+  --color-surface-2: #172033;
+  --color-surface-3: #1d2941;
+  --color-line: #26334a;
+  --color-line-soft: #1c2740;
+  --color-text: #f7f9fc;
+  --color-muted: #94a3b8;
+  --color-faint: #64748b;
+  --color-accent: #67e8f9;
+  --color-accent-strong: #22d3ee;
+  --color-accent-deep: #0e7490;
+  --color-leaf: #4ade80;
+  --color-danger: #f87171;
+  --color-well: #05070c;
+  --color-on-accent: #06272e;
+  --color-scrim: #05070cd9;
+  --color-glow: #243c672e;
+  --color-dot: #67e8f90a;
+
+  --radius-card: 10px;
+  --shadow-card: 0 2px 0 #000000a8, 0 12px 28px #00000066;
+  --font-display: "Press Start 2P", "Segoe UI", monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+
+    /* The 18 Pokémon types. Fixed across both themes deliberately: type
+       identity is franchise-wide and older than either of this app's
+       palettes, so it does not get re-derived from --color-accent the way
+       everything else does. Plain custom properties, not @theme tokens:
+       @theme only recognises Tailwind's own namespaces (--color-, --font-,
+       --radius-, ...) and silently drops anything outside them, which is
+       exactly what happened here the first time. */
+    --type-normal: #9a9370;
+    --type-fire: #ee6b3c;
+    --type-water: #4f9fe0;
+    --type-electric: #f2c53d;
+    --type-grass: #6bbf4f;
+    --type-ice: #7fd8d0;
+    --type-fighting: #c0524a;
+    --type-poison: #a259c4;
+    --type-ground: #cf9a4a;
+    --type-flying: #93a9f2;
+    --type-psychic: #ef6ea0;
+    --type-bug: #a3c23e;
+    --type-rock: #b7a468;
+    --type-ghost: #6e5a9e;
+    --type-dragon: #6c5ce0;
+    --type-dark: #8a7b6c;
+    --type-steel: #9fb0bb;
+    --type-fairy: #ec9bc4;
+  }
+
+  /* Corn: the same tokens, harvest values. The alternate wording still comes
+     from themeCopy on the Go side. */
+  body.corn {
+    --color-bg: #141008;
+    --color-surface: #1e1810;
+    --color-surface-2: #292013;
+    --color-surface-3: #342a17;
+    --color-line: #4b3d1e;
+    --color-line-soft: #382e17;
+    --color-text: #f6efdc;
+    --color-muted: #c0af8b;
+    --color-faint: #8b7b5d;
+    --color-accent: #f2c53d;
+    --color-accent-strong: #ffd95c;
+    --color-accent-deep: #b8860b;
+    --color-leaf: #a9c96a;
+    --color-danger: #f27a4f;
+    --color-well: #0e0a05;
+    --color-on-accent: #241a06;
+    --color-scrim: #0b0803d9;
+    --color-glow: #7a5c1e33;
+    --color-dot: #f2c53d0a;
+  }
+
+  body {
+    /* Kernel-field backdrop: a faint dot lattice over a soft vignette. Cheap
+       (two gradients), and it reads as texture rather than decoration. */
+    background:
+      radial-gradient(circle at 1px 1px, var(--color-dot) 1px, transparent 1.6px),
+      radial-gradient(1100px 560px at 80% -12%, var(--color-glow), transparent 62%),
+      var(--color-bg);
+    background-size:
+      26px 26px,
+      auto,
+      auto;
+    color: var(--color-text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  /* The icon set is inline SVG paths, drawn on a 24x24 grid and stroked rather
+     than filled, so one rule styles every icon in the app. */
+  .icon {
+    width: 1.25em;
+    height: 1.25em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex: none;
+  }
+  .icon-lg {
+    width: 1.75em;
+    height: 1.75em;
+  }
+}
+
+@layer components {
+  /* ---- Type accents ------------------------------------------------------ */
+
+  /* Pixel-face label. Used for eyebrows, nav brand, section markers: the one
+     typographic voice that says "game hardware" instead of "SaaS dashboard". */
+  .eyebrow {
+    color: var(--color-accent);
+    font-family: var(--font-display);
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .eyebrow--muted {
+    color: var(--color-faint);
+  }
+  #dex-shiny {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .dex-shiny-icon {
+    width: 12px;
+    height: 12px;
+  }
+
+  .pixel {
+    font-family: var(--font-display);
+  }
+
+  /* ---- Surfaces ---------------------------------------------------------- */
+
+  .surface {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+  }
+
+  /* A raised card: the cartridge look. Hard 2px drop instead of a soft blur,
+     and a gold top edge on hover. */
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    box-shadow: 0 2px 0 #00000070;
+    transition:
+      border-color 0.12s ease,
+      transform 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .card:hover {
+    border-color: var(--color-accent);
+    transform: translateY(-2px);
+    box-shadow:
+      0 4px 0 #00000070,
+      0 14px 30px #00000059;
+  }
+
+  /* Page hero: the strip that names the tool. Gold kernel row along the top. */
+  .hero {
+    position: relative;
+    background: linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 5px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-accent) 0 14px,
+      var(--color-accent-deep) 14px 16px
+    );
+  }
+
+  /* ---- Top navigation ---------------------------------------------------- */
+
+  .topnav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 clamp(14px, 4vw, 40px);
+    min-height: 58px;
+    background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--color-line);
+  }
+  /* The kernel stripe: the brand mark of every page. */
+  .topnav::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 4px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-accent) 0 12px,
+      var(--color-accent-deep) 12px 14px
+    );
+  }
+
+  /* min-width: 0 overrides the flex default (min-width: auto, i.e. "never
+     shrink below my content's own width"), without it .brand-label's
+     ellipsis rule below is dead code: the flexbox never actually compresses
+     the link enough to trigger it, and the pixel-font brand text (long in
+     the corn theme: "🌽 ROM Relay · Corn Mode") just pushes the hamburger
+     menu and sign-out control off the right edge of a phone-width screen,
+     forcing the whole page to scroll horizontally to reach them. */
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+    color: var(--color-text);
+    text-decoration: none;
+    font-family: var(--font-display);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+  }
+  .brand-emblem {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 9px;
+    border: 1px solid var(--color-line);
+    background: var(--color-surface-2);
+    font-size: 1.15rem;
+  }
+  .brand-emblem img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 7px;
+  }
+  .brand-label {
+    overflow: hidden;
+    min-width: 0;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Nav links are opened by the menu button, not shown by default, at any
+     width: the button is the one control for revealing and hiding them. */
+  .topnav-links {
+    display: none;
+    align-items: stretch;
+    gap: 0.15rem;
+    align-self: stretch;
+  }
+  .topnav-links[data-open="true"] {
+    display: grid;
+    position: fixed;
+    inset: 58px 0 auto 0;
+    z-index: 49;
+    gap: 0.1rem;
+    padding: 0.6rem;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-line);
+    box-shadow: 0 18px 30px #00000080;
+  }
+  .topnav-links[data-open="true"] .topnav-link {
+    padding: 0.7rem 0.8rem;
+    border-radius: 8px;
+  }
+  .topnav-links[data-open="true"] .topnav-link[aria-current="page"]::after {
+    display: none;
+  }
+  .topnav-links[data-open="true"] .topnav-link[aria-current="page"] {
+    background: var(--color-surface-2);
+  }
+  .topnav-menu-button {
+    display: inline-flex;
+  }
+  .topnav-link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0 0.8rem;
+    color: var(--color-muted);
+    font-size: 0.86rem;
+    font-weight: 650;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .topnav-link:hover {
+    color: var(--color-text);
+  }
+  .topnav-link[aria-current="page"] {
+    color: var(--color-accent);
+  }
+  /* Active marker: a kernel block, not an underline hair. */
+  .topnav-link[aria-current="page"]::after {
+    content: "";
+    position: absolute;
+    inset: auto 0.8rem 0 0.8rem;
+    height: 4px;
+    border-radius: 2px 2px 0 0;
+    background: var(--color-accent);
+  }
+
+  /* A grouped nav entry (e.g. "Pokémon Tools", "Admin") is a native <details>
+     disclosure: no JS, keyboard-operable and screen-reader-friendly for free. */
+  .topnav-group {
+    position: relative;
+    align-self: stretch;
+    display: flex;
+    align-items: stretch;
+  }
+  .topnav-group > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .topnav-group > summary::-webkit-details-marker {
+    display: none;
+  }
+  .topnav-group-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 51;
+    display: grid;
+    gap: 0.1rem;
+    min-width: 12rem;
+    padding: 0.4rem;
+    margin-top: 0.35rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 10px;
+    box-shadow: 0 18px 30px #00000080;
+  }
+  .topnav-group-menu .topnav-link {
+    padding: 0.6rem 0.7rem;
+    border-radius: 8px;
+  }
+
+  /* The activity widget sits at the right edge, so its dropdown opens toward
+     the left instead of overflowing off-screen. Idle state matches the
+     surrounding chrome (same muted icon as any other topnav control); a job
+     going active switches it to the accent colour, same signal as the
+     current-page marker elsewhere in the nav. */
+  .topnav-activity {
+    align-self: center;
+  }
+  .topnav-activity .topnav-group-menu {
+    left: auto;
+    right: 0;
+    min-width: 16rem;
+  }
+  .topnav-activity[data-active="true"] > summary {
+    color: var(--color-accent);
+  }
+  .topnav-activity-empty {
+    margin: 0;
+    padding: 0.4rem 0.5rem;
+    color: var(--color-faint);
+    font-size: 0.8rem;
+  }
+  .topnav-activity-row {
+    padding: 0.5rem 0.5rem;
+    border-radius: 8px;
+    font-size: 0.8rem;
+  }
+  .topnav-activity-row + .topnav-activity-row {
+    border-top: 1px solid var(--color-line);
+  }
+  .topnav-activity-row-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-weight: 650;
+  }
+  .topnav-activity-row-msg {
+    margin: 0.2rem 0 0.4rem;
+    color: var(--color-muted);
+  }
+  .topnav-activity-row .kernelbar {
+    height: 6px;
+  }
+
+  /* ---- Controls ---------------------------------------------------------- */
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 650;
+    text-decoration: none;
+    cursor: pointer;
+    box-shadow: 0 2px 0 #00000070;
+    transition:
+      border-color 0.1s ease,
+      transform 0.1s ease,
+      box-shadow 0.1s ease;
+  }
+  .button:hover {
+    border-color: var(--color-accent);
+  }
+  .button:active {
+    transform: translateY(2px);
+    box-shadow: none;
+  }
+  /* Primary is a filled gold key, not an outline: the one action on a panel
+     should read at a glance. */
+  .button--primary {
+    background: linear-gradient(180deg, var(--color-accent-strong), var(--color-accent));
+    border-color: var(--color-accent-deep);
+    color: var(--color-on-accent);
+    box-shadow: 0 2px 0 var(--color-accent-deep);
+  }
+  .button--primary:hover {
+    border-color: var(--color-accent-deep);
+    filter: brightness(1.06);
+  }
+  .button--danger:hover {
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+  }
+  .button--small {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.16rem 0.45rem;
+    border: 1px solid var(--color-line);
+    border-radius: 6px;
+    background: var(--color-surface-2);
+    color: var(--color-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+  .badge--accent {
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-line));
+    background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-2));
+    color: var(--color-accent);
+  }
+  .badge--leaf {
+    border-color: color-mix(in srgb, var(--color-leaf) 55%, var(--color-line));
+    background: color-mix(in srgb, var(--color-leaf) 12%, var(--color-surface-2));
+    color: var(--color-leaf);
+  }
+
+  .field {
+    width: 100%;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font: inherit;
+  }
+  .field:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  /* Combobox: a .field text input with a filtered listbox anchored under it
+     (see combobox() in pokehome.js). The wrapping label already establishes
+     position:relative-free static flow, so the list positions off the input
+     itself, not a wrapper, one fewer element the JS has to manage. */
+  .combobox-wrap {
+    position: relative;
+  }
+  .combobox-list {
+    z-index: 70;
+    max-height: 13rem;
+    overflow-y: auto;
+    padding: 0.3rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 10px;
+    box-shadow: 0 18px 30px #00000080;
+  }
+  /* Positioned in JS (see combobox() in pokehome.js) from the input's own
+     getBoundingClientRect, fixed to the viewport, not the nearest
+     scrollable ancestor, so it is never clipped by .modal's overflow-y. */
+  .combobox-list--floating {
+    position: fixed;
+  }
+  .combobox-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 7px;
+    font-size: 0.86rem;
+    cursor: pointer;
+  }
+  .combobox-option-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+    object-fit: contain;
+    image-rendering: pixelated;
+  }
+  .combobox-option:hover,
+  .combobox-option--active {
+    background: var(--color-surface-2);
+    color: var(--color-accent-strong);
+  }
+  .combobox-empty {
+    padding: 0.45rem 0.6rem;
+    color: var(--color-faint);
+    font-size: 0.82rem;
+  }
+
+  /* toast: a one-off dismissable notice anchored bottom-centre, for
+     first-visit explanations that would otherwise sit as a permanent
+     paragraph under every page's H1 forever. */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    max-width: min(90vw, 480px);
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--color-line);
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    box-shadow: var(--shadow-card);
+    transform: translate(-50%, 0.5rem);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  .toast--visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+    pointer-events: auto;
+  }
+  .toast-close {
+    flex-shrink: 0;
+    color: var(--color-faint);
+    background: none;
+    border: 0;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0.1rem 0.25rem;
+  }
+  .toast-close:hover {
+    color: var(--color-text);
+  }
+
+  /* Form-field "?" hint: a tap/click target on touch, a title tooltip on
+     desktop, cheaper than a toast for one static sentence of explanation. */
+  .formhint {
+    display: inline-grid;
+    place-items: center;
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: 50%;
+    border: 1px solid var(--color-line);
+    color: var(--color-faint);
+    font-size: 0.68rem;
+    font-weight: 700;
+    cursor: help;
+  }
+  .formhint:hover,
+  .formhint:focus-visible {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  /* Chip: a filter option. The real input is visually hidden inside; checking
+     it fills the chip gold. Replaces columns of bare checkboxes. */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.32rem 0.65rem;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-surface-2);
+    color: var(--color-muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+    cursor: pointer;
+    user-select: none;
+    transition:
+      border-color 0.1s ease,
+      background 0.1s ease,
+      color 0.1s ease;
+  }
+  .chip:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+  .chip:has(input:checked),
+  .chip--active {
+    background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+    border-color: var(--color-accent);
+    color: var(--color-accent-strong);
+  }
+  .chip:has(input:focus-visible) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .chip-count {
+    font-size: 0.7rem;
+    color: var(--color-faint);
+  }
+  .chip:has(input:checked) .chip-count {
+    color: color-mix(in srgb, var(--color-accent) 70%, var(--color-muted));
+  }
+
+  /* ---- Data table -------------------------------------------------------- */
+
+  /* One clean table style for reference data (encounters, evolutions, admin
+     lists). Always wrapped in .table-scroll so a wide table scrolls itself
+     instead of the page. */
+  .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+  }
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .table th {
+    position: sticky;
+    top: 0;
+    padding: 0.55rem 0.75rem;
+    background: var(--color-surface-2);
+    border-bottom: 1px solid var(--color-line);
+    color: var(--color-accent);
+    font-family: var(--font-display);
+    font-size: 0.52rem;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-align: left;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--color-line-soft);
+    vertical-align: top;
+  }
+  .table tr:last-child td {
+    border-bottom: 0;
+  }
+  .table tbody tr:hover td {
+    background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+  }
+
+  /* ---- Type chart ---------------------------------------------------------
+     Standard 18x18 attacker/defender reference: rows are the sticky
+     first-column defending type, columns the sticky-header attacking type.
+     Both header rails use .table's own sticky-top; the row rail adds
+     sticky-left so a wide chart still orients on a small screen. */
+  .typechart th img,
+  .typechart td {
+    text-align: center;
+  }
+  /* The generic .table th/td padding (built for prose-width data tables) makes
+     an 18x18 reference grid enormous, every cell here is one badge or one
+     short label, so it gets its own much tighter box. */
+  .typechart th,
+  .typechart td {
+    padding: 0.3rem 0.4rem;
+  }
+  .typechart-corner,
+  .typechart-rowhead {
+    position: sticky;
+    left: 0;
+    background: var(--color-surface-2);
+    z-index: 1;
+  }
+  .typechart-cell {
+    width: 2.4rem;
+    font-weight: 650;
+    font-size: 0.8rem;
+  }
+  .typechart-cell.mx0 {
+    background: color-mix(in srgb, var(--color-danger) 22%, transparent);
+    color: var(--color-danger);
+  }
+  .typechart-cell.mx25 {
+    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+    color: var(--color-muted);
+  }
+  .typechart-cell.mx50 {
+    color: var(--color-muted);
+  }
+  .typechart-cell.mx200 {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-accent);
+  }
+  .typechart-cell.mx400 {
+    background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+    color: var(--color-accent-strong);
+  }
+  .typechart-badge {
+    image-rendering: pixelated;
+    display: block;
+    margin: 0 auto;
+  }
+  .typechart-rowhead {
+    cursor: pointer;
+  }
+  .typechart-rowhead:hover .typechart-badge {
+    filter: brightness(1.15);
+  }
+  .typechart-selected .typechart-badge {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: 3px;
+  }
+  /* Filtered view: everything not part of the selected type(s)' row(s) fades
+     back, so the handful of cells that matter don't have to be found among
+     324. */
+  .typechart-dim {
+    opacity: 0.25;
+  }
+  .typechart-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    border: 1px solid var(--color-line);
+    background: var(--color-surface-2);
+    font-size: 0.85rem;
+  }
+  .typechart-summary-chip {
+    display: inline-block;
+    border-radius: 7px;
+    padding: 0.2rem 0.55rem;
+  }
+
+  /* ---- Progress ---------------------------------------------------------- */
+
+  /* Kernel progress bar: the fill is segmented like a corn row. */
+  .kernelbar {
+    height: 12px;
+    border: 1px solid var(--color-line);
+    border-radius: 6px;
+    background: var(--color-bg);
+    overflow: hidden;
+  }
+  .kernelbar > i {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-accent) 0 8px,
+      var(--color-accent-deep) 8px 10px
+    );
+    transition: width 0.4s ease;
+  }
+
+  /* ---- Modal ------------------------------------------------------------- */
+
+  .modal-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: var(--color-scrim);
+    backdrop-filter: blur(3px);
+  }
+  .modal-scrim[data-open="true"] {
+    display: flex;
+  }
+  .modal {
+    position: relative;
+    width: min(920px, 100%);
+    max-height: 88vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* ---- Tooltip ----------------------------------------------------------- */
+
+  /* Hover/focus popup for a short note (e.g. the Hall of Fame 50-cap caveat).
+     Pure CSS: the trigger holds the bubble, hover or keyboard focus shows it. */
+  .tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: help;
+  }
+  .tip-bubble {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 40;
+    width: max-content;
+    max-width: min(280px, 80vw);
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-surface-3);
+    color: var(--color-text);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.4;
+    box-shadow: var(--shadow-card);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+  .tip:hover .tip-bubble,
+  .tip:focus-visible .tip-bubble,
+  .tip:focus-within .tip-bubble {
+    opacity: 1;
+  }
+
+  /* ---- Catalog filter drawer -------------------------------------------- */
+
+  /* The filter panel is a sidebar on desktop and a slide-in drawer on narrow
+     screens. Both states are the same markup: only this rule differs, so there
+     is one form to keep working rather than two. */
+  .filters {
+    position: sticky;
+    top: calc(58px + 1.25rem);
+    align-self: start;
+  }
+
+  @media (max-width: 820px) {
+    .layout--catalog {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .filters {
+      position: fixed;
+      inset: 0 auto 0 0;
+      z-index: 70;
+      width: min(340px, 88vw);
+      overflow-y: auto;
+      border-radius: 0;
+      transform: translateX(-100%);
+      transition: transform 0.18s ease-out;
+    }
+    .filters[data-open="true"] {
+      transform: translateX(0);
+    }
+    .filters-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 65;
+      background: var(--color-scrim);
+    }
+  }
+
+  /* ---- FBI batch picker --------------------------------------------------- */
+
+  /* A selectable CIA: cover thumbnail + name. Checked state dims the art and
+     stamps a gold check block over it, so a glance shows what is going to the
+     console. */
+  .pick {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-surface-2);
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.1s ease;
+  }
+  .pick:hover {
+    border-color: var(--color-accent);
+  }
+  .pick:has(input:checked) {
+    border-color: var(--color-accent);
+  }
+  .pick:has(input:checked) img {
+    opacity: 0.35;
+  }
+  .pick-mark {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: none;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 6px;
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    font-weight: 900;
+  }
+  .pick:has(input:checked) .pick-mark {
+    display: grid;
+  }
+  .pick:has(input:focus-visible) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  /* Format + encryption stamp: several releases of one game (encrypted CIA,
+     decrypted CIA, raw cart dump) share a title and cover, so this is the only
+     thing on the card that tells them apart before you read the file name. */
+  .pick-tags {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  .pick-tag {
+    padding: 0.12rem 0.4rem;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .pick-tag--ok {
+    background: color-mix(in srgb, var(--color-leaf) 55%, rgba(0, 0, 0, 0.65));
+  }
+  .pick-tag--warn {
+    background: color-mix(in srgb, var(--color-danger) 55%, rgba(0, 0, 0, 0.65));
+  }
+
+  /* ---- Species panel: type chips, matchup ledger, chapters --------------- */
+
+  /* Species header: the game's own painted type badge
+     (internal/web/ui/dist/typebadges, sliced from assets/PokemonTools),
+     colour and label both come from the art, so the chip is just a frame. */
+  .type-chip {
+    display: inline-flex;
+    align-items: center;
+  }
+  .type-chip img {
+    width: 64px;
+    height: 28px;
+    image-rendering: pixelated;
+  }
+  /* PokeHome's editor header: the same painted badge, same size, different page. */
+  .editor-type-badge {
+    width: 64px;
+    height: 28px;
+    image-rendering: pixelated;
+  }
+  .move-type-dot {
+    display: inline-block;
+    width: 22px;
+    height: 10px;
+    margin-right: 0.4rem;
+    vertical-align: middle;
+    object-fit: contain;
+  }
+
+  /* The type-matchup ledger: every relevant type in a fixed 18-slot grid
+     position, so the multiplier reads from fill weight instead of a sentence.
+     Outline = resists; solid = weak; doubled ring = x4; hatched = immune. */
+  .ledger-grid {
+    display: grid;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    gap: 0.35rem;
+  }
+  @media (max-width: 480px) {
+    .ledger-grid {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+  }
+  .tchip {
+    position: relative;
+    height: 34px;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+  }
+  .tchip img {
+    width: 32px;
+    height: 14px;
+  }
+  .tchip[data-state="weak"] {
+    background: transparent;
+    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 3px var(--tc);
+  }
+  .tchip[data-state="quad"] {
+    background: transparent;
+    box-shadow:
+      0 0 0 2px var(--color-surface),
+      0 0 0 3px var(--tc),
+      0 0 0 5px var(--color-surface),
+      0 0 0 6px var(--tc);
+  }
+  .tchip[data-state="resist"] {
+    background: transparent;
+    color: var(--tc);
+    border: 1.5px solid var(--tc);
+  }
+  .tchip[data-state="immune"] {
+    background: var(--color-surface-2);
+    color: var(--color-faint);
+  }
+  .tchip[data-state="immune"]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: 0.6;
+    background: repeating-linear-gradient(135deg, transparent 0 4px, var(--color-line) 4px 5px);
+  }
+
+  /* A move's category (Physical/Special/Status): the real HGSS category icon
+     (internal/web/ui/dist/movecat), not a coloured letter. Native aspect
+     ratio (32x14, a short pill), the plate colour is baked into the art. */
+  .movecat {
+    display: inline-block;
+    width: 32px;
+    height: 14px;
+  }
+
+  /* Gender ratio: the same segmented-bar language as .kernelbar, split two
+     ways instead of filled one. */
+  .gender-bar {
+    display: flex;
+    height: 6px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--color-line-soft);
+  }
+  .gender-bar > i {
+    display: block;
+    height: 100%;
+  }
+  .gender-bar > i.m {
+    background: var(--color-accent-strong);
+  }
+  .gender-bar > i.f {
+    background: var(--type-fairy);
+  }
+  .gender-icon {
+    width: 16px;
+    height: 16px;
+    image-rendering: pixelated;
+  }
+
+  /* A chapter is a native <details> disclosure, the same pattern .topnav-group
+     already uses: keyboard-operable and screen-reader-correct with no JS of
+     its own. The summary row keeps a one-line "at a glance" readout so closing
+     a chapter defers detail without hiding the fact entirely. */
+  .chapter > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .chapter > summary::-webkit-details-marker {
+    display: none;
+  }
+  .chapter > summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .chapter-mark {
+    transition: transform 0.15s ease;
+  }
+  .chapter[open] > summary .chapter-mark {
+    transform: rotate(90deg);
+    color: var(--color-accent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chapter-mark {
+      transition: none;
+    }
+  }
+
+  /* ---- PokeHome: PC boxes ------------------------------------------------ */
+
+  /* The PC itself: a console panel, gold kernel-stripe top edge like .hero,
+     but scaled down to frame a box rather than a whole page. One component
+     for three jobs (PokeHome's own storage, the withdrawal destination
+     picker, and, inside a slot, the editor's entry point): the box is the
+     shared surface all three PokeHome-suite views are drawn on, matching the
+     brief's "single system" framing. */
+  .pcbox {
+    position: relative;
+    background: linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+  }
+  .pcbox::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 4px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--color-accent) 0 10px,
+      var(--color-accent-deep) 10px 12px
+    );
+  }
+  .pcbox-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 0.9rem 1rem 0.7rem;
+  }
+  .pcbox-name {
+    min-width: 9rem;
+    text-align: center;
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    color: var(--color-accent);
+  }
+  .pcbox-page {
+    color: var(--color-faint);
+    font-size: 0.72rem;
+  }
+
+  /* Six across, same as the games, the grid does not reflow to fill a wide
+     screen with fewer, bigger slots, it stays the box shape and centers.
+     Only the slot size shrinks on narrow screens, at the breakpoints below. */
+  .pcbox-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.4rem;
+    max-width: 30rem;
+    margin: 0 auto;
+    padding: 0 1rem 1.1rem;
+  }
+  @media (max-width: 560px) {
+    .pcbox-grid {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 420px) {
+    .pcbox-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+
+  /* One slot: square, recessed like a code-block well, an unlit socket
+     until something sits in it. */
+  .pcslot {
+    position: relative;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    border-radius: 6px;
+    background: var(--color-well);
+    border: 1px solid var(--color-line-soft);
+  }
+  .pcslot--empty {
+    border-style: dashed;
+  }
+  .pcslot--occupied {
+    cursor: pointer;
+    border-color: var(--color-line);
+    transition: border-color 0.1s ease, transform 0.1s ease;
+  }
+  .pcslot--occupied:hover,
+  .pcslot--occupied:focus-visible {
+    border-color: var(--color-accent);
+    transform: translateY(-1px);
+  }
+  /* Scoped to the sprite specifically, not ".pcslot img", that bare
+     descendant selector used to also match the gender/shiny corner badge
+     <img> tags nested in the same tile, and (being more specific than their
+     own single-class rules below) stretched both badges to 82% of the tile,
+     covering the sprite entirely. */
+  .pcslot-sprite {
+    width: 82%;
+    height: 82%;
+    object-fit: contain;
+    image-rendering: pixelated;
+  }
+  .pcslot-level {
+    position: absolute;
+    left: 2px;
+    bottom: 2px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: var(--color-scrim);
+    font-family: var(--font-display);
+    font-size: 0.44rem;
+    line-height: 1.5;
+    color: var(--color-text);
+  }
+  .pcslot-shiny {
+    position: absolute;
+    top: 1px;
+    right: 2px;
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+  .pcslot-gender {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 0.85rem;
+    height: 0.85rem;
+    image-rendering: pixelated;
+  }
+
+  /* Picker mode (the withdrawal destination grid): an empty slot gets the
+     accent treatment a .chip gets when active. An occupied slot is now also
+     clickable (see slotCell's onOccupiedClick, evict the occupant to
+     PokeHome, then place yours) and so uses .pcslot--occupied's own
+     pointer/hover styling with no extra modifier; .pcslot--inert below is
+     only for a caller that doesn't wire onOccupiedClick at all. */
+  .pcslot--pickable {
+    cursor: pointer;
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-line-soft));
+    background: color-mix(in srgb, var(--color-accent) 6%, var(--color-well));
+    transition: border-color 0.1s ease, background 0.1s ease, transform 0.1s ease;
+  }
+  .pcslot--pickable:hover,
+  .pcslot--pickable:focus-visible {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 14%, var(--color-well));
+    transform: translateY(-1px);
+  }
+  .pcslot--inert {
+    cursor: not-allowed;
+    opacity: 0.45;
+    filter: grayscale(0.6);
+  }
+
+  /* Deposit's multiselect grid reuses .pcslot as a checkbox tile, the same
+     :has() trick .pick already uses for its checked state, so no JS is
+     needed to reflect a selection, only to track which ids are selected. */
+  .pcslot:has(input:checked) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  /* Deposit's own tile: unlike a literal PC slot, it needs room for a name
+     and level under the icon (which of several same-species Pokémon is
+     this?), so it is not just .pcslot with a modifier, a fixed 1:1 square
+     has nowhere to put that text. */
+  .depositslot {
+    position: relative;
+    display: grid;
+    gap: 0.15rem;
+    place-items: center;
+    padding: 0.45rem 0.3rem 0.35rem;
+    border-radius: 8px;
+    background: var(--color-well);
+    border: 1px solid var(--color-line-soft);
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 0.1s ease, transform 0.1s ease;
+  }
+  .depositslot:hover {
+    border-color: var(--color-accent);
+    transform: translateY(-1px);
+  }
+  .depositslot:has(input:checked) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .depositslot-sprite {
+    width: 2.6rem;
+    height: 2.6rem;
+    object-fit: contain;
+    image-rendering: pixelated;
+  }
+  .depositslot-name {
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--color-text);
+    font-size: 0.68rem;
+    font-weight: 650;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .depositslot-lv {
+    color: var(--color-muted);
+    font-size: 0.6rem;
+  }
+  .depositslot-item {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 1.1rem;
+    height: 1.1rem;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 1px 1px #00000090);
+  }
+  .depositslot-shiny {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    width: 0.8rem;
+    height: 0.8rem;
+  }
+  .depositslot-gender {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 0.85rem;
+    height: 0.85rem;
+    image-rendering: pixelated;
+  }
+
+  /* A destination pick: a save's name/game, chosen from a plain vertical
+     list rather than a grid, this list is a handful of saves, not a wall of
+     tiles, so .pick's card treatment would be heavier than the choice needs. */
+  .destrow {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.1s ease;
+  }
+  .destrow:hover,
+  .destrow:focus-visible {
+    border-color: var(--color-accent);
+  }
+
+  /* IV/EV entry: 6 stats in the games' own order (HP/Atk/Def/SpA/SpD/Spe),
+     each a compact labeled number field rather than a full .field row,
+     six of those stacked would read as a form wizard, not one stat spread. */
+  .statgrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+  @media (max-width: 420px) {
+    .statgrid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .statfield {
+    display: grid;
+    gap: 0.25rem;
+  }
+  .statfield label {
+    font-family: var(--font-display);
+    font-size: 0.5rem;
+    letter-spacing: 0.06em;
+    color: var(--color-faint);
+    text-transform: uppercase;
+  }
+
+  /* ---- Misc -------------------------------------------------------------- */
+
+  /* Only shown when JavaScript is unavailable: with htmx the panel applies
+     filters as you click, so an Apply button would be noise. Without it, this
+     button is the only way to submit the form. */
+  .htmx-only-hidden {
+    display: none;
+  }
+
+  /* htmx's own indicator rules, restated here because base.html turns off the
+     <style> element it would otherwise inject, that injection is inline, and
+     style-src 'self' blocks it. Keep these in step with htmx's defaults. */
+  .htmx-indicator {
+    opacity: 0;
+  }
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator {
+    opacity: 1;
+    transition: opacity 200ms ease-in;
+  }
+}

@@ -1,0 +1,144 @@
+{{define "patches"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Patch Workspace{{end}}
+
+{{define "content"}}
+<section class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  {{/* The workspace is deliberately temporary, so it says so before anything
+       else: results expire, and this is not where a permanent build comes from. */}}
+  <span class="eyebrow">Temporary workshop</span>
+  <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">ROM Patcher</h1>
+  <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+    Pick a clean base ROM already in your library, or upload one, choose a reusable recipe or upload your patch, and
+    ROM Relay creates a separate temporary catalog entry. A library pick is only ever copied; an upload is deleted
+    after the job.
+  </p>
+</section>
+
+<div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(240px,340px)]">
+  <section class="surface p-[clamp(18px,3vw,30px)]">
+    <form class="grid gap-4" id="public-patch-form" enctype="multipart/form-data">
+
+      <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+        <span class="eyebrow">Step 1</span>
+        <h2 class="mb-3 mt-1 text-lg">Clean base ROM</h2>
+        <div class="grid gap-3.5 sm:grid-cols-2">
+          {{/* The visible field takes a readable label and the hidden one carries
+               the artifact ID, so a typed-but-unmatched entry cannot silently
+               submit the wrong ROM, same convention as the admin patch form. */}}
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">From your library</span>
+            <input type="hidden" name="artifact_id">
+            <input type="hidden" name="artifact_label">
+            <button class="field flex items-center justify-between gap-2 text-left" type="button" id="public-artifact-open">
+              <span id="public-artifact-chosen" class="truncate text-[var(--color-muted)]">Browse library…</span>
+              <svg class="icon shrink-0" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8h10a4 4 0 0 1 3.8 5.2l-1 3A2.6 2.6 0 0 1 15.5 17l-1.2-1.3H9.7L8.5 17a2.6 2.6 0 0 1-4.3-.8l-1-3A4 4 0 0 1 7 8Z"/><path d="M7 12h4M9 10v4"/></svg>
+            </button>
+            <small class="text-[var(--color-muted)]" id="public-artifact-help">Pick a game already in your library to patch a copy without re-uploading it.</small>
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Or upload a ROM</span>
+            <input class="field" type="file" name="rom">
+            <small class="text-[var(--color-muted)]">Use the exact revision expected by the patch. Required only when nothing is picked from the library.</small>
+          </label>
+        </div>
+      </div>
+
+      <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+        <span class="eyebrow">Step 2</span>
+        <h2 class="mb-3 mt-1 text-lg">Patch source</h2>
+        <div class="grid gap-3.5 sm:grid-cols-2">
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Server recipe</span>
+            <select class="field" id="patch-recipe" name="patch_id"><option value="">Upload my own patch</option></select>
+            <small class="text-[var(--color-muted)]">Choose this when the relay already has the patch.</small>
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Your patch file</span>
+            <input class="field" type="file" name="patch" accept=".ips,.ups,.bps,.ppf,.rup,.aps,.bdf,.pmsr,.vcdiff">
+            <small class="text-[var(--color-muted)]">Required only when no recipe is selected.</small>
+          </label>
+        </div>
+      </div>
+
+      <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+        <span class="eyebrow">Step 3</span>
+        <h2 class="mb-3 mt-1 text-lg">Name the patched entry</h2>
+        <div class="grid gap-3.5 sm:grid-cols-2">
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Output filename <b class="text-[var(--color-accent)]">required*</b></span>
+            <input class="field" name="output_filename" placeholder="Pokemon Radical Red.gba">
+            <small class="text-[var(--color-muted)]">*A recipe may supply this. The base extension is enforced.</small>
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Display title</span>
+            <input class="field" name="title" placeholder="Pokemon Radical Red">
+            <small class="text-[var(--color-muted)]">Optional but recommended.</small>
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Developer / patch author</span>
+            <input class="field" name="developer">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Release date</span>
+            <input class="field" name="release_date">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Genre</span>
+            <input class="field" name="genre">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Region</span>
+            <input class="field" name="region" placeholder="World">
+          </label>
+          <label class="grid gap-1.5 sm:col-span-2">
+            <span class="text-sm font-semibold">Description</span>
+            <textarea class="field" name="description" rows="5" placeholder="Describe what this patch changes…"></textarea>
+            <small class="text-[var(--color-muted)]">Optional. Patched entries never query remote metadata, so add this if other users should know what they are downloading.</small>
+          </label>
+          {{/* Patched entries get no artwork from a metadata provider, so this is
+               the only chance to give the card a cover. */}}
+          <label class="grid gap-1.5 rounded-[13px] border border-dashed border-[color-mix(in_srgb,var(--color-accent)_45%,var(--color-line))] p-3.5 sm:col-span-2">
+            <span class="text-sm font-semibold">Cover / icon artwork</span>
+            <input class="field" type="file" name="cover" accept="image/png,image/jpeg,image/webp">
+            <small class="text-[var(--color-muted)]">Optional PNG, JPEG, or WebP up to 8 MiB. It appears on the patched game card; otherwise ROM Relay shows its own logo as a placeholder until you add one.</small>
+          </label>
+        </div>
+      </div>
+
+      <button class="button button--primary justify-center" type="submit">Create temporary patched ROM</button>
+    </form>
+
+    <pre class="mt-4 min-h-[70px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="patch-result" aria-live="polite">No patch job submitted yet.</pre>
+  </section>
+
+  <aside class="surface p-5 lg:sticky lg:top-5">
+    <span class="eyebrow">Before you start</span>
+    <h2 class="mb-3 mt-1 text-lg">What happens?</h2>
+    <ol class="m-0 grid list-decimal gap-2.5 pl-5 text-sm text-[var(--color-muted)]">
+      <li>Your base ROM is copied into private staging.</li>
+      <li>The patch runs against that copy, never your source.</li>
+      <li>The output is validated and gets a green Patched badge.</li>
+      <li>The result expires after 24 hours or its latest completed download.</li>
+    </ol>
+    <p class="mt-3 text-sm text-[var(--color-muted)]">Only the private admin workspace can make a result permanent or approve a checksum mismatch.</p>
+    <p class="mt-3 text-sm"><strong>Supported:</strong> IPS, UPS, BPS, PPF, RUP, APS, BSDiff, PMSR, and VCDiff.</p>
+  </aside>
+</div>
+
+{{/* Library picker: the same cover-art card grid the 3DS Batch Installer
+     uses, single-select instead of checkboxes, replaces the bare
+     text+datalist combo, whose native dropdown had no styling and no cover
+     art to recognise a title by. */}}
+<div class="modal-scrim" id="patch-artifact-modal" data-patch-artifact-modal>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="patch-artifact-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,28px)]">
+      <h2 class="m-0 text-lg" id="patch-artifact-title">Choose a base ROM</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Pick the exact file this patch expects.</p>
+      <input class="field mt-3" type="text" placeholder="Filter by title…" id="patch-artifact-filter" autocomplete="off">
+      <div class="my-3 grid max-h-[50vh] grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2.5 overflow-y-auto pr-1" id="patch-artifact-list"></div>
+    </div>
+  </div>
+</div>
+{{end}}

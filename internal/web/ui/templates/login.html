@@ -1,0 +1,48 @@
+{{define "login"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Sign in{{end}}
+
+{{define "content"}}
+{{/* The sign-in screen is the first thing a new account sees: a cartridge-style
+     card under the brand mark, centred in the viewport. */}}
+<div class="relative grid min-h-[calc(100vh-12rem)] place-items-center px-2 py-6">
+  <div class="pointer-events-none absolute inset-x-0 top-0 mx-auto h-64 w-[min(560px,90%)] rounded-full bg-[var(--color-accent)] opacity-[0.06] blur-3xl" aria-hidden="true"></div>
+
+  <section class="hero relative w-[min(420px,100%)] p-[clamp(24px,5vw,38px)] shadow-[var(--shadow-card)]">
+    <span class="grid h-12 w-12 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-surface-2)]" aria-hidden="true"><img src="/assets/logo/brand.png" width="34" height="34" alt="" class="rounded-md object-contain"></span>
+
+    <h1 class="pixel mb-2 mt-5 text-[1.05rem] leading-relaxed">Player select</h1>
+    <p class="m-0 text-sm text-[var(--color-muted)]">One login for your library, saves, patches, and Pokédex.</p>
+
+    {{if .Error}}
+    <div class="mt-5 flex items-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--color-danger)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-danger)_8%,transparent)] p-3 text-sm text-[var(--color-danger)]" role="alert">
+      <svg class="icon mt-px shrink-0" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5M12 16h.01M10.3 3.9 2.4 17a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+      <span>{{.Error}}</span>
+    </div>
+    {{end}}
+
+    <form class="mt-5 grid gap-4" method="post" action="/login">
+      {{/* Only an in-app absolute path survives urlPathEscape, so this cannot be
+           turned into an open redirect. */}}
+      <input type="hidden" name="next" value="{{.Next}}">
+      <label class="grid gap-1.5">
+        <span class="eyebrow eyebrow--muted">Username</span>
+        <input class="field" name="username" autocomplete="username" autofocus required
+               autocapitalize="none" spellcheck="false">
+      </label>
+      <label class="grid gap-1.5">
+        <span class="eyebrow eyebrow--muted">Password</span>
+        <input class="field" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="button button--primary mt-1 justify-center py-2.5" type="submit">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17l-5-5 5-5M4 12h11M12 5h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-6"/></svg>
+        Press Start
+      </button>
+    </form>
+
+    <p class="mt-5 mb-0 border-t border-[var(--color-line)] pt-4 text-center text-xs text-[var(--color-muted)]">
+      No account? Ask whoever runs this relay to create one for you.
+    </p>
+  </section>
+</div>
+{{end}}

@@ -94,12 +94,25 @@ func TestReconcileParsesHashesAndPrunes(t *testing.T) {
 	if err = s.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// The header index runs first and leaves hashes empty; the catalog is already
+	// browsable with the parsed title.
 	games, err := s.Games(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(games) != 1 || games[0].Title != "LEGAL TEST" || len(games[0].Artifacts) != 1 || len(games[0].Artifacts[0].SHA256) != 64 {
-		t.Fatalf("unexpected catalog: %+v", games)
+	if len(games) != 1 || games[0].Title != "LEGAL TEST" || len(games[0].Artifacts) != 1 || games[0].Artifacts[0].SHA256 != "" {
+		t.Fatalf("unexpected catalog after index: %+v", games)
+	}
+	// The background pass fills in the content hashes.
+	if err = s.HashPending(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	games, err = s.Games(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(games[0].Artifacts[0].SHA256) != 64 || len(games[0].Artifacts[0].CRC32) == 0 {
+		t.Fatalf("hashes not filled after HashPending: %+v", games)
 	}
 	if err = os.Remove(p); err != nil {
 		t.Fatal(err)
@@ -135,9 +148,9 @@ func TestReconcileSkipsPlatformPatchAndPatchedTreesAndPrunesLegacyRows(t *testin
 			t.Fatal(err)
 		}
 		st, _ := os.Stat(patchROM)
-		a, fingerprintErr := fingerprint(context.Background(), patchROM, Platforms[2], st)
-		if fingerprintErr != nil {
-			t.Fatal(fingerprintErr)
+		a, indexErr := indexArtifact(patchROM, Platforms[2], st)
+		if indexErr != nil {
+			t.Fatal(indexErr)
 		}
 		if err = s.upsert(a); err != nil {
 			t.Fatal(err)

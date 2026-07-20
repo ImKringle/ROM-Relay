@@ -1,0 +1,33 @@
+{{define "adminroms"}}{{template "base" .}}{{end}}
+
+{{define "title"}}ROM Library{{end}}
+
+{{define "content"}}
+<a class="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] no-underline" href="/admin{{.Token}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Admin
+</a>
+
+<div class="mx-auto grid max-w-5xl gap-5" data-admin-roms>
+
+  <section class="hero p-[clamp(18px,3.5vw,32px)]">
+    <span class="eyebrow">Catalog</span>
+    <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">ROM Library</h1>
+    <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+      Every cataloged file, across every platform. Deleting one removes the file from disk as well as the
+      catalog entry. This cannot be undone.
+    </p>
+  </section>
+
+  <section class="surface p-5">
+    <label class="grid gap-1.5">
+      <span class="text-sm font-semibold">Filter</span>
+      <input class="field" type="search" id="roms-filter" placeholder="Search by title, file name, or platform…" autocomplete="off">
+    </label>
+  </section>
+
+  <section class="grid gap-2" id="roms-list" aria-live="polite">
+    <p class="text-sm text-[var(--color-muted)]">Loading catalog…</p>
+  </section>
+
+</div>
+{{end}}

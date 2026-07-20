@@ -1,0 +1,69 @@
+{{define "adminhub"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Admin{{end}}
+
+{{define "content"}}
+<section class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <span class="eyebrow">System management</span>
+  <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Admin</h1>
+  <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+    Everything that manages this relay lives here: accounts, the ROM catalog, player saves and Pokédex data,
+    patched builds, and server settings.
+  </p>
+  <div class="mt-4 flex flex-wrap gap-4 text-sm text-[var(--color-muted)]">
+    <span><strong class="text-[var(--color-text)]">{{.Stats.Games}}</strong> games</span>
+    <span><strong class="text-[var(--color-text)]">{{.Stats.Files}}</strong> files</span>
+    <span><strong class="text-[var(--color-text)]">{{.Stats.Users}}</strong> users</span>
+  </div>
+</section>
+
+<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/users{{.Token}}">
+    <span class="eyebrow">Access control</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">Users</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Create accounts, set roles, reset passwords, and control access.</p>
+  </a>
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/roms{{.Token}}">
+    <span class="eyebrow">Catalog</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">ROM Library</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Browse every cataloged file and remove ones you no longer want.</p>
+  </a>
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/saves{{.Token}}">
+    <span class="eyebrow">Player data</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">Player Data</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Look up a user's saves and Pokédex/Trainer data; download, delete, or clear it.</p>
+  </a>
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/patches{{.Token}}">
+    <span class="eyebrow">{{.Copy.AdminTitle}}</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">Patch Workspace</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Build patched ROMs, edit metadata and artwork, and manage retention.</p>
+  </a>
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/settings{{.Token}}">
+    <span class="eyebrow">Configuration</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">Settings</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Edit ROM Relay's non-secret configuration. Changes take effect on restart.</p>
+  </a>
+  <a class="surface flex flex-col gap-1.5 p-5 no-underline" href="/admin/api-keys{{.Token}}">
+    <span class="eyebrow">API integration</span>
+    <h2 class="m-0 text-lg text-[var(--color-text)]">API Keys</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]">Issue and revoke bearer tokens for scripts that call the internal API.</p>
+  </a>
+</div>
+
+<section class="surface mt-5 border-[color-mix(in_srgb,var(--color-danger)_45%,var(--color-line))] p-[clamp(18px,3vw,30px)]" id="server-control">
+  <span class="eyebrow">Safe exit</span>
+  <h2 class="mb-2 mt-1 text-xl">Server control</h2>
+  {{/* A plain form post, not fetch: shutting the relay down is the one action
+       that must still work when the bundle failed to load. The confirm popup
+       is a JS enhancement on top of it (wireShutdown in admin.js), without JS
+       the form still submits, just without the "are you sure" gate. */}}
+  <form method="post" action="/api/admin/shutdown" data-shutdown-form>
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button class="button button--danger" type="submit">Shut down ROM Relay cleanly</button>
+  </form>
+  <p class="mt-3 text-sm text-[var(--color-muted)]">
+    Stops HTTP, cancels and waits for background work, checkpoints SQLite, logs completion, and then
+    restores the terminal.
+  </p>
+</section>
+{{end}}

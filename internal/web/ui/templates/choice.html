@@ -1,0 +1,37 @@
+{{define "choice"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Choose CIA format{{end}}
+
+{{define "content"}}
+<a class="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] no-underline" href="/games/{{.Artifact.GameID}}{{.Token}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Game details
+</a>
+
+<section class="surface max-w-2xl p-[clamp(18px,3vw,30px)]">
+  <span class="badge">encrypted CIA</span>
+  <h1 class="my-3 text-2xl">Choose the compatible download</h1>
+  {{/* The two formats are not interchangeable, and picking the wrong one fails
+       only later on the device, so the difference is spelled out before the
+       download rather than after it. */}}
+  <p class="text-[var(--color-muted)]">
+    <strong class="text-[var(--color-text)]">Encrypted</strong> is the right choice for FBI and a real or homelab Nintendo 3DS.
+    <strong class="text-[var(--color-text)]">Unencrypted</strong> is commonly required by mobile-based 3DS emulators.
+  </p>
+
+  <p class="mt-4"><a class="button button--primary" href="{{.EncryptedURL}}">Download original encrypted CIA</a></p>
+
+  {{if .MobileURL}}
+  <p class="mt-2"><a class="button" href="{{.MobileURL}}">Download prepared unencrypted CIA</a></p>
+  {{else if and .Admin .DecryptReady}}
+  <form class="mt-2" method="post" action="/api/admin/decrypt/{{.Artifact.ID}}{{.Token}}">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button class="button" type="submit">Prepare unencrypted CIA</button>
+  </form>
+  <p class="mt-2 text-sm text-[var(--color-muted)]">This runs the private Redux-compatible driver against a copy. The encrypted source is not changed.</p>
+  {{else if not .DecryptReady}}
+  <p class="mt-2 text-sm text-[var(--color-muted)]">Unencrypted preparation is unavailable: {{.DecryptReason}}. See internal/drivers/cia-3ds-decryptor/README.md.</p>
+  {{else}}
+  <p class="mt-2 text-sm text-[var(--color-muted)]">An administrator must open the private admin session before preparing a new unencrypted copy.</p>
+  {{end}}
+</section>
+{{end}}

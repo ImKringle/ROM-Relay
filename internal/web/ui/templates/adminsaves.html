@@ -1,0 +1,49 @@
+{{define "adminsaves"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Player Data{{end}}
+
+{{define "content"}}
+<a class="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] no-underline" href="/admin{{.Token}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Admin
+</a>
+
+<div class="mx-auto grid max-w-4xl gap-5" data-admin-players>
+
+  <section class="hero p-[clamp(18px,3.5vw,32px)]">
+    <span class="eyebrow">Player data</span>
+    <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Player Data</h1>
+    <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+      Pick a user to see their stored saves and Pokédex/Trainer data. Downloading and deleting a save, and
+      clearing dex data for one or more selected playthroughs, act only on the selected user.
+    </p>
+  </section>
+
+  <section class="surface p-5">
+    <label class="grid gap-1.5">
+      <span class="text-sm font-semibold">User</span>
+      <select class="field" id="player-picker"><option value="">Choose a user…</option></select>
+    </label>
+  </section>
+
+  <section class="surface hidden p-5" id="player-dex">
+    <span class="eyebrow">Pokédex / Trainers</span>
+    <div id="player-dex-summary" class="grid gap-3"></div>
+    <button class="button button--danger mt-3.5" type="button" id="player-clear-trainers" disabled>Clear Associated Dex Data</button>
+    <p class="mt-2 text-xs text-[var(--color-faint)]">Clears Hall of Fame and dex progress for the selected playthroughs only. It never touches saves or stored Pokémon, a PokeHome deposit is permanent by design and survives this, a save deletion, or both; manage deposits directly below.</p>
+  </section>
+
+  <section class="surface hidden p-5" id="player-pokehome">
+    <span class="eyebrow">PokeHOME</span>
+    <h2 class="mb-1 mt-1 text-lg">Deposited Pokémon</h2>
+    <p class="m-0 mb-3 text-sm text-[var(--color-muted)]">These are why "Pokémon stored" can stay above zero after every dex/save clear above, a deposit is permanent until deleted here.</p>
+    <div id="player-pokehome-list" class="grid gap-2"></div>
+  </section>
+
+  <section class="surface hidden p-5" id="player-saves">
+    <span class="eyebrow">Save Vault</span>
+    <h2 class="mb-3 mt-1 text-lg">Saves</h2>
+    <div id="player-saves-list" class="grid gap-2"></div>
+  </section>
+
+</div>
+{{end}}

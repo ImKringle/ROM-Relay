@@ -1,0 +1,69 @@
+{{define "editor"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Editor{{end}}
+
+{{define "content"}}
+<div class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Editor</h1>
+      <p class="m-0 mt-1 max-w-3xl text-sm text-[var(--color-muted)]">
+        PKHeX used directly: build a Pokémon from scratch, or upload a save,
+        edit one of its Pokémon, and send the change straight back into it,
+        no PokeHome deposit required.
+      </p>
+    </div>
+    <button class="button" type="button" data-create-open>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      Create Pokémon
+    </button>
+  </div>
+</div>
+
+<section>
+  <div id="tools-editor-step-save">
+    <h2 class="m-0 mb-2 text-lg">Edit a save</h2>
+    <p class="m-0 mb-3 text-sm text-[var(--color-muted)]">Choose a save to edit its Pokémon.</p>
+    <div class="grid gap-1.5" id="tools-editor-save-list"></div>
+    <div class="mt-3 max-w-xl border-t border-[var(--color-line-soft)] pt-3">
+      {{template "save-upload" dict "Intro" "Or upload a save, its Pokémon are ready to edit as soon as it's read."}}
+    </div>
+  </div>
+  <div id="tools-editor-step-mons" hidden>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-[var(--color-muted)]">
+      <p class="m-0">
+        <button class="button button--small" type="button" id="tools-editor-back">‹ Back</button>
+        <span id="tools-editor-save-label"></span>
+      </p>
+      <button class="button button--small" type="button" id="tools-editor-bag-open">Bag</button>
+    </div>
+    {{/* Grouped into Party/Box sections by editor.js, each section holds its
+         own grid, so this stays a plain container rather than a grid itself. */}}
+    <div id="tools-editor-mon-grid"></div>
+    <p class="mt-2 text-sm text-[var(--color-muted)]" id="tools-editor-mon-empty" hidden>
+      No Pokémon were read from this save.
+    </p>
+  </div>
+</section>
+
+{{template "pokemon-editor-modals" .}}
+
+{{/* The item bag belongs to a save, not to any one Pokémon, so it is its own
+     modal rather than living in pokemon-editor-modals, nothing about
+     PokeHome (which deals in owned Pokémon instances, not raw save bytes)
+     needs it. */}}
+<div class="modal-scrim" id="bag-modal" data-bag-scrim>
+  <div class="modal w-[min(600px,100%)]" role="dialog" aria-modal="true" aria-labelledby="bag-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <h2 class="m-0 text-lg" id="bag-title">Bag</h2>
+      <p class="m-0 mt-1 text-sm text-[var(--color-muted)]">Saving writes a new save version to your Save Vault, this save's Pokémon are unaffected.</p>
+      <div class="mt-3 grid gap-3" id="bag-pouches"></div>
+      <div class="mt-4 flex items-center gap-3">
+        <button class="button button--primary" type="button" id="bag-save">Save changes</button>
+        <div class="text-sm text-[var(--color-muted)]" id="bag-out"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}

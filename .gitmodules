@@ -1,0 +1,9 @@
+[submodule "third_party/api-data"]
+	path = third_party/api-data
+	url = https://github.com/PokeAPI/api-data
+[submodule "third_party/ndecrypt"]
+	path = third_party/ndecrypt
+	url = https://github.com/SabreTools/NDecrypt.git
+[submodule "third_party/go-qrcode"]
+	path = third_party/go-qrcode
+	url = https://github.com/skip2/go-qrcode.git

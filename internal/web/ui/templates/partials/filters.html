@@ -1,0 +1,54 @@
+{{define "filters"}}
+{{/* One form, two presentations. On desktop this is a sidebar; under 820px CSS
+     turns it into a drawer. The markup does not change between them, so there is
+     one form to keep working rather than two.
+
+     Every control is a chip wrapping a real checkbox in a GET form: with
+     JavaScript off, the Apply button submits and the page reloads filtered.
+     With htmx, any change swaps the grid and pushes the URL, so the button is
+     hidden by app.js. */}}
+<form class="filters surface p-4 max-h-[calc(100vh-58px-2.5rem)] overflow-y-auto"
+      data-filters
+      method="get"
+      action="/"
+      hx-get="/"
+      hx-target="#game-grid"
+      hx-select="#game-grid"
+      hx-swap="outerHTML"
+      hx-trigger="change, search, input changed delay:300ms from:#filter-q"
+      hx-push-url="true"
+      hx-indicator="#grid-busy">
+
+  <div class="mb-3 flex items-center justify-between">
+    <h2 class="eyebrow m-0">Filters</h2>
+    {{if .Filter.Active}}<a class="text-xs text-[var(--color-accent)]" href="/{{.Token}}">Clear all</a>{{end}}
+  </div>
+
+  <label class="sr-only" for="filter-q">Search the library</label>
+  <input class="field mb-4" id="filter-q" name="q" type="search" value="{{.Filter.Query}}"
+         placeholder="Search titles, files…" autocomplete="off">
+
+  {{template "facet" dict "Legend" "Platform" "Name" "platform" "Values" .Facets.Platforms}}
+  {{template "facet" dict "Legend" "Status" "Name" "status" "Values" .Facets.Statuses}}
+
+  {{/* Hidden once app.js runs: with htmx the filters apply as you click. */}}
+  <button class="button button--primary mt-2 w-full justify-center" type="submit" data-js-hidden>Apply filters</button>
+</form>
+{{end}}
+
+{{define "facet"}}
+{{if .Values}}
+<fieldset class="mb-4 border-0 p-0">
+  <legend class="eyebrow eyebrow--muted mb-2 p-0">{{.Legend}}</legend>
+  <div class="flex flex-wrap gap-1.5">
+    {{range .Values}}
+    <label class="chip">
+      <input class="sr-only" type="checkbox" name="{{$.Name}}" value="{{.Value}}" {{if .Checked}}checked{{end}}>
+      <span>{{.Label}}</span>
+      <span class="chip-count">{{.Count}}</span>
+    </label>
+    {{end}}
+  </div>
+</fieldset>
+{{end}}
+{{end}}

@@ -50,10 +50,6 @@ func (m *Manager) Available() (bool, string) {
 // Prepare makes an unencrypted sibling of an encrypted catalog CIA. It never
 // modifies the source and publishes only after structural CIA validation.
 func (m *Manager) Prepare(parent context.Context, artifactID string) (catalog.Artifact, error) {
-	available, reason := m.Available()
-	if !available {
-		return catalog.Artifact{}, fmt.Errorf("3DS decryptor unavailable: %s", reason)
-	}
 	a, err := m.store.Artifact(parent, artifactID)
 	if err != nil {
 		return catalog.Artifact{}, err
@@ -61,48 +57,14 @@ func (m *Manager) Prepare(parent context.Context, artifactID string) (catalog.Ar
 	if a.Platform != "3ds" || !strings.EqualFold(a.Extension, ".cia") || a.Encryption != "encrypted" {
 		return catalog.Artifact{}, errors.New("only encrypted catalog CIA files can be prepared")
 	}
-	select {
-	case m.one <- struct{}{}:
-		defer func() { <-m.one }()
-	case <-parent.Done():
-		return catalog.Artifact{}, parent.Err()
-	}
-	ctx, cancel := context.WithTimeout(parent, m.timeout)
-	defer cancel()
-	stage, err := os.MkdirTemp(m.workRoot, "cia-decrypt-")
+	output, err := m.run(parent, a.Name, a.Path, a.Size)
 	if err != nil {
 		return catalog.Artifact{}, err
 	}
-	defer os.RemoveAll(stage)
-	if err = copyBundle(ctx, m.driverRoot, stage); err != nil {
-		return catalog.Artifact{}, fmt.Errorf("stage decryptor: %w", err)
-	}
-	stagedSource := filepath.Join(stage, a.Name)
-	if err = copyFile(ctx, a.Path, stagedSource, a.Size); err != nil {
-		return catalog.Artifact{}, fmt.Errorf("stage source: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", scriptName)
-	cmd.Dir = stage
-	cmd.Stdin = bytes.NewBufferString("\r\n\r\n\r\n")
-	log := &limitedBuffer{limit: 256 << 10}
-	cmd.Stdout, cmd.Stderr = log, log
-	if err = cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return catalog.Artifact{}, fmt.Errorf("decryptor timed out or was cancelled: %w", ctx.Err())
-		}
-		return catalog.Artifact{}, fmt.Errorf("decryptor failed: %w (%s)", err, log.summary())
-	}
-	output, err := findOutput(stage, stagedSource)
-	if err != nil {
-		return catalog.Artifact{}, fmt.Errorf("decryptor produced no usable CIA: %w (%s)", err, log.summary())
-	}
-	if err = converter.Validate(output); err != nil {
-		return catalog.Artifact{}, fmt.Errorf("decrypted CIA validation failed: %w", err)
-	}
+	defer os.Remove(output)
 	// The directory is the encryption discriminator; retaining the basename also
 	// groups encrypted/unencrypted variants as one catalog game.
-	name := a.Name
-	final := filepath.Join(m.library, "3ds", "cia", "unencrypted", name)
+	final := filepath.Join(m.library, "3ds", "cia", "unencrypted", a.Name)
 	if err = os.MkdirAll(filepath.Dir(final), 0755); err != nil {
 		return catalog.Artifact{}, err
 	}
@@ -116,11 +78,96 @@ func (m *Manager) Prepare(parent context.Context, artifactID string) (catalog.Ar
 		os.Remove(final)
 		return catalog.Artifact{}, err
 	}
-	if err = m.store.Reconcile(ctx); err != nil {
+	if err = m.store.Reconcile(parent); err != nil {
 		os.Remove(final)
 		return catalog.Artifact{}, err
 	}
-	return m.store.ArtifactByPath(ctx, final)
+	return m.store.ArtifactByPath(parent, final)
+}
+
+// PrepareBytes runs the same decrypt as Prepare against an ad-hoc uploaded
+// CIA rather than an existing catalog artifact, and returns the decrypted
+// bytes directly instead of publishing them into the library, the caller
+// decides whether and where to keep the result. name is only used to pick
+// the extension the driver bundle dispatches on ("must end .cia").
+func (m *Manager) PrepareBytes(parent context.Context, name string, data []byte) ([]byte, error) {
+	if !strings.EqualFold(filepath.Ext(name), ".cia") {
+		return nil, errors.New("only .cia files can be decrypted through this driver")
+	}
+	scratch, err := os.MkdirTemp(m.workRoot, "cia-upload-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(scratch)
+	src := filepath.Join(scratch, filepath.Base(name))
+	if err = os.WriteFile(src, data, 0600); err != nil {
+		return nil, err
+	}
+	output, err := m.run(parent, filepath.Base(name), src, int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(output)
+	return os.ReadFile(output)
+}
+
+// run stages the driver bundle plus one source file (already on disk, e.g. a
+// catalog artifact's path or an upload's scratch copy) into a private
+// directory, executes the batch script once, and returns the validated
+// decrypted CIA's path, the work Prepare and PrepareBytes share, the
+// publish-or-return-bytes step after it is the only thing that differs
+// between them.
+func (m *Manager) run(parent context.Context, name, sourcePath string, sourceSize int64) (string, error) {
+	available, reason := m.Available()
+	if !available {
+		return "", fmt.Errorf("3DS decryptor unavailable: %s", reason)
+	}
+	select {
+	case m.one <- struct{}{}:
+		defer func() { <-m.one }()
+	case <-parent.Done():
+		return "", parent.Err()
+	}
+	ctx, cancel := context.WithTimeout(parent, m.timeout)
+	defer cancel()
+	stage, err := os.MkdirTemp(m.workRoot, "cia-decrypt-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stage)
+	if err = copyBundle(ctx, m.driverRoot, stage); err != nil {
+		return "", fmt.Errorf("stage decryptor: %w", err)
+	}
+	stagedSource := filepath.Join(stage, name)
+	if err = copyFile(ctx, sourcePath, stagedSource, sourceSize); err != nil {
+		return "", fmt.Errorf("stage source: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", scriptName)
+	cmd.Dir = stage
+	cmd.Stdin = bytes.NewBufferString("\r\n\r\n\r\n")
+	log := &limitedBuffer{limit: 256 << 10}
+	cmd.Stdout, cmd.Stderr = log, log
+	if err = cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("decryptor timed out or was cancelled: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("decryptor failed: %w (%s)", err, log.summary())
+	}
+	output, err := findOutput(stage, stagedSource)
+	if err != nil {
+		return "", fmt.Errorf("decryptor produced no usable CIA: %w (%s)", err, log.summary())
+	}
+	if err = converter.Validate(output); err != nil {
+		return "", fmt.Errorf("decrypted CIA validation failed: %w", err)
+	}
+	// output lives inside stage, which is removed on return via the defer
+	// above - move it out to workRoot first rather than handing back a path
+	// that is about to be deleted out from under the caller.
+	kept := filepath.Join(m.workRoot, filepath.Base(output))
+	if err = os.Rename(output, kept); err != nil {
+		return "", fmt.Errorf("preserve decrypted output: %w", err)
+	}
+	return kept, nil
 }
 
 func copyBundle(ctx context.Context, src, dst string) error {

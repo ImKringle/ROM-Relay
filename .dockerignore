@@ -1,0 +1,16 @@
+# Keep the build context small and free of secrets/local state.
+.git
+development/
+# The PokeAPI dump is bind-mounted at runtime, never baked into the image.
+third_party/api-data/
+dist/
+build/
+*.exe
+romrelay
+ROMRelay.zip
+romrelay.db
+romrelay.db-*
+config.ini.backup-*
+.env
+internal/drivers/3ds/*.bin
+internal/drivers/cia-3ds-decryptor/*.exe

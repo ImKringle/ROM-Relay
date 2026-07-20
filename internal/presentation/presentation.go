@@ -17,6 +17,11 @@ type Presenter struct {
 	Out, Err    io.Writer
 	Interactive bool
 	live        LiveSink
+	// lineMu serializes writes to Out/Err. Callers that parallelize background
+	// work (ROM hashing, 3DS conversion) call Info/Success/Warning/Error from
+	// multiple goroutines at once; without this, concurrent fmt.Fprintf calls
+	// can interleave mid-line in the log output.
+	lineMu sync.Mutex
 }
 
 type LiveSink interface {
@@ -44,6 +49,8 @@ func (p *Presenter) choose(clean, corn string) string {
 	return clean
 }
 func (p *Presenter) line(w io.Writer, kind, clean, corn string, args ...any) {
+	p.lineMu.Lock()
+	defer p.lineMu.Unlock()
 	prefix := map[string]string{"info": "INFO", "ok": "OK", "warn": "WARN", "error": "ERROR"}[kind]
 	if p.Corn() {
 		prefix = map[string]string{"info": "🌽", "ok": "🌱", "warn": "⚠ CORN", "error": "💥 CORN"}[kind]

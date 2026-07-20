@@ -1,0 +1,70 @@
+{{define "users"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Users{{end}}
+
+{{define "content"}}
+<a class="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] no-underline" href="/admin{{.Token}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Admin
+</a>
+
+<div class="mx-auto grid max-w-5xl gap-5" data-users>
+
+  <section class="hero p-[clamp(18px,3.5vw,32px)]">
+    <span class="eyebrow">Access control</span>
+    <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Users</h1>
+    <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+      Create accounts, set roles, and control access. Disabling an account blocks sign-in and ends its sessions
+      while keeping every save and Pokémon it owns; deleting one destroys them.
+    </p>
+  </section>
+
+  {{/* A created or reset password exists in readable form exactly once, in this
+       response. It gets its own region rather than a line in the list, because
+       the admin has to copy it before doing anything else. */}}
+  <section class="surface hidden border-[var(--color-accent)] p-5" id="temp-password" aria-live="assertive">
+    <span class="eyebrow">Shown once</span>
+    <h2 class="mb-1 mt-1 text-lg" id="temp-password-title">Temporary password</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]" id="temp-password-detail"></p>
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <code class="flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3 font-mono text-base break-all" id="temp-password-value"></code>
+      <button class="button button--primary" type="button" data-copy-password>Copy</button>
+      <button class="button" type="button" data-dismiss-password>Done</button>
+    </div>
+    <p class="mt-3 mb-0 text-sm text-[var(--color-muted)]">
+      ROM Relay stores only a hash of this password, so it cannot be shown again or looked up later. If it is
+      lost, reset the account to issue a new one.
+    </p>
+  </section>
+
+  <section class="surface p-5" id="create-user">
+    <span class="eyebrow">New account</span>
+    <h2 class="mb-3 mt-1 text-lg">Create a user</h2>
+    <form class="grid items-end gap-3.5 sm:grid-cols-[minmax(0,1fr)_auto_auto]" id="create-user-form">
+      <label class="grid gap-1.5">
+        <span class="text-sm font-semibold">Username</span>
+        <input class="field" name="username" required maxlength="64" autocomplete="off"
+               placeholder="misty" pattern="[A-Za-z0-9._@\-]+">
+        <small class="text-[var(--color-muted)]">Letters, digits, and . _ - @ only.</small>
+      </label>
+      <label class="grid gap-1.5">
+        <span class="text-sm font-semibold">Role</span>
+        <select class="field" name="role">
+          <option value="user" selected>User</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <button class="button button--primary justify-center" type="submit">Create account</button>
+    </form>
+    <p class="mt-3 mb-0 text-sm text-[var(--color-muted)]">
+      ROM Relay generates a temporary password and shows it once. The user must replace it when they first
+      sign in, so their standing password is never known to you.
+    </p>
+    <p class="mt-2 mb-0 hidden text-sm text-[var(--color-danger)]" id="create-user-error" role="alert"></p>
+  </section>
+
+  <section class="grid gap-3" id="users-list" aria-live="polite">
+    <p class="text-sm text-[var(--color-muted)]">Loading accounts…</p>
+  </section>
+
+</div>
+{{end}}

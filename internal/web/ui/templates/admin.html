@@ -1,0 +1,319 @@
+{{define "admin"}}{{template "base" .}}{{end}}
+
+{{define "title"}}{{.Copy.AdminTitle}}{{end}}
+
+{{define "content"}}
+<a class="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] no-underline" href="/admin{{.Token}}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Admin
+</a>
+
+<section class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <span class="eyebrow">Library management</span>
+  <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">{{.Copy.AdminTitle}}</h1>
+  <p class="m-0 mt-1 max-w-3xl text-sm text-[var(--color-muted)]">
+    Build patched entries, correct metadata and artwork, manage remote imports, and control retention.
+    Changes here affect what everyone using this relay sees.
+  </p>
+</section>
+
+<div class="grid items-start gap-5 lg:grid-cols-[220px_minmax(0,1fr)]" data-admin>
+  {{/* The page is long and its sections are unrelated errands, so it carries its
+       own nav. On narrow screens it becomes a scrolling strip above the content
+       rather than a sidebar that would push everything off-screen. */}}
+  <nav class="surface flex gap-1 overflow-x-auto p-3 lg:sticky lg:top-5 lg:grid" aria-label="Admin sections">
+    <a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#create-patch">Create patch</a>
+    <a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#edit-metadata">Game metadata</a>
+    <a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#keep-result">Retention</a>
+    {{if .HasConverter}}<a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#convert-3ds">3DS conversion</a>{{end}}
+    {{if .HasRemote}}<a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#remote-library">Remote library</a>{{end}}
+    <a class="whitespace-nowrap rounded-lg p-2.5 text-sm font-semibold text-[var(--color-muted)] no-underline hover:bg-white/5 hover:text-[var(--color-text)]" href="#dex-maintenance">Pokédex</a>
+  </nav>
+
+  <div class="grid gap-5">
+
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="create-patch">
+      <span class="eyebrow">New catalog entry</span>
+      <h2 class="mb-2 mt-1 text-xl">Create a patched ROM</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Choose one catalog file as the clean base, supply exactly one patch source, then name the output.
+        The base ROM is copied and never modified.
+      </p>
+
+      <form class="grid gap-4" id="patch-form" enctype="multipart/form-data">
+        <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+          <span class="eyebrow">Step 1</span>
+          <h3 class="mb-3 mt-1 text-base">Choose the clean base ROM</h3>
+          {{/* The visible field takes a readable label and the hidden one carries
+               the artifact ID, so a typed-but-unmatched entry cannot silently
+               submit the wrong ROM. */}}
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Catalog game / file <b class="text-[var(--color-accent)]">required</b></span>
+            <input class="field" id="artifact-picker" name="artifact_label" list="catalog-artifacts" required placeholder="Start typing a game title…" autocomplete="off">
+            <input type="hidden" name="artifact_id">
+            <datalist id="catalog-artifacts"></datalist>
+            <small class="text-[var(--color-muted)]" id="artifact-help">Select a suggestion so ROM Relay can use its exact artifact ID.</small>
+          </label>
+        </div>
+
+        <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+          <span class="eyebrow">Step 2</span>
+          <h3 class="mb-3 mt-1 text-base">Choose the patch</h3>
+          <div class="grid gap-3.5 sm:grid-cols-2">
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Reusable server recipe</span>
+              <select class="field" id="patch-recipe" name="patch_id"><option value="">Upload a one-job patch instead</option></select>
+              <small class="text-[var(--color-muted)]">Recipes remember their platform, expected base checksum, and default output name.</small>
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">One-job patch upload</span>
+              <input class="field" type="file" name="patch" accept=".ips,.ups,.bps,.ppf,.rup,.aps,.bdf,.pmsr,.vcdiff">
+              <small class="text-[var(--color-muted)]">Use only when no recipe is selected.</small>
+            </label>
+          </div>
+          <details class="mt-3.5 rounded-[14px] border border-[var(--color-line)]">
+            <summary class="cursor-pointer p-3.5 font-semibold text-[var(--color-accent)]">Advanced: legacy patch inbox path</summary>
+            <div class="px-3.5 pb-3.5">
+              <label class="grid gap-1.5">
+                <span class="text-sm font-semibold">Relative path under the root patch inbox</span>
+                <input class="field" name="local_patch" placeholder="folder/file.ips">
+                <small class="text-[var(--color-muted)]">For migration only. Normal reusable patches belong under platforms/&lt;platform&gt;/patches.</small>
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <div class="rounded-[15px] border border-[var(--color-line)] p-4">
+          <span class="eyebrow">Step 3</span>
+          <h3 class="mb-3 mt-1 text-base">Name and describe the result</h3>
+          <div class="grid gap-3.5 sm:grid-cols-2">
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Output filename <b class="text-[var(--color-accent)]">required*</b></span>
+              <input class="field" name="output_filename" placeholder="Pokemon Radical Red.gba">
+              <small class="text-[var(--color-muted)]">*Optional only when the selected recipe provides it. The base extension is enforced.</small>
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Display title</span>
+              <input class="field" name="title" placeholder="Pokemon Radical Red">
+              <small class="text-[var(--color-muted)]">Optional, but strongly recommended.</small>
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Developer / patch author</span>
+              <input class="field" name="developer">
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Publisher</span>
+              <input class="field" name="publisher">
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Release date</span>
+              <input class="field" name="release_date" placeholder="2026">
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Genre</span>
+              <input class="field" name="genre">
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Region</span>
+              <input class="field" name="region" placeholder="World">
+            </label>
+            <label class="grid gap-1.5">
+              <span class="text-sm font-semibold">Cover / icon artwork</span>
+              <input class="field" type="file" name="cover" accept="image/png,image/jpeg,image/webp">
+              <small class="text-[var(--color-muted)]">Optional PNG, JPEG, or WebP up to 8 MiB. This becomes the patched card artwork.</small>
+            </label>
+            <label class="grid gap-1.5 sm:col-span-2">
+              <span class="text-sm font-semibold">Description</span>
+              <textarea class="field" name="description" rows="5" placeholder="What changes in this patch?"></textarea>
+              <small class="text-[var(--color-muted)]">Optional. Patched games never receive a remote synopsis, so this is the best place to explain the entry.</small>
+            </label>
+            <label class="flex items-center gap-2.5 sm:col-span-2">
+              <input class="size-4" type="checkbox" name="retain" value="true">
+              <span class="text-sm">Keep this result permanently; otherwise remove it 24 hours after creation or its latest completed download.</span>
+            </label>
+          </div>
+        </div>
+
+        <button class="button button--primary justify-center" type="submit">Create and validate patched ROM</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="result" aria-live="polite">No patch job submitted yet.</pre>
+    </section>
+
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="edit-metadata">
+      <span class="eyebrow">Catalog presentation</span>
+      <h2 class="mb-2 mt-1 text-xl">Edit game metadata and artwork</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Choose any game. Saving creates a manual override, so Libretro and IGDB will not undo your corrections.
+      </p>
+
+      <form class="grid gap-4" id="metadata-form" enctype="multipart/form-data">
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Game</span>
+          <select class="field" name="game_id" required><option value="">Choose a game…</option></select>
+        </label>
+
+        {{/* The preview shows what is being edited before anything is typed: the
+             picker is a long list of similar names, and saving the wrong game
+             writes a manual override that providers will not correct later. */}}
+        <div class="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-4 rounded-[14px] border border-[var(--color-line)] p-3.5 sm:grid-cols-[96px_minmax(0,1fr)]" id="metadata-preview" hidden>
+          <div class="grid aspect-[3/4] w-full place-items-center rounded-[9px] bg-[var(--color-surface-3)] text-xs text-[var(--color-faint)]" data-preview-art>Art</div>
+          <div class="grid gap-1.5">
+            <strong id="metadata-preview-title"></strong>
+            <div class="flex flex-wrap gap-1.5" id="metadata-preview-badges"></div>
+            <p class="m-0 text-xs text-[var(--color-muted)]" id="metadata-preview-source"></p>
+          </div>
+        </div>
+
+        <div class="grid gap-3.5 sm:grid-cols-2">
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Display title <b class="text-[var(--color-accent)]">required</b></span>
+            <input class="field" name="title" required maxlength="240">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Developer</span>
+            <input class="field" name="developer" maxlength="240">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Publisher</span>
+            <input class="field" name="publisher" maxlength="240">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Release date</span>
+            <input class="field" name="release_date" maxlength="80">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Genre</span>
+            <input class="field" name="genre" maxlength="240">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Region</span>
+            <input class="field" name="region" maxlength="120">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Players</span>
+            <input class="field" name="players" maxlength="80">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Rating</span>
+            <input class="field" name="rating" maxlength="80">
+          </label>
+          <label class="grid gap-1.5">
+            <span class="text-sm font-semibold">Replacement cover / icon</span>
+            <input class="field" type="file" name="cover" accept="image/png,image/jpeg,image/webp">
+            <small class="text-[var(--color-muted)]">Optional. PNG, JPEG, or WebP up to 8 MiB.</small>
+          </label>
+          <label class="flex items-center gap-2.5 sm:col-span-2">
+            <input class="size-4" type="checkbox" name="remove_cover" value="true">
+            <span class="text-sm">Remove current cover</span>
+          </label>
+          <label class="grid gap-1.5 sm:col-span-2">
+            <span class="text-sm font-semibold">Description</span>
+            <textarea class="field" name="description" rows="7" maxlength="16384"></textarea>
+          </label>
+        </div>
+
+        <button class="button button--primary justify-center" type="submit">Save manual metadata</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="metadata-result" aria-live="polite"></pre>
+    </section>
+
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="keep-result">
+      <span class="eyebrow">Retention</span>
+      <h2 class="mb-2 mt-1 text-xl">Keep a temporary result</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Paste a completed Job ID from the public patch workspace. Only an administrator can remove its expiry.
+      </p>
+      <form class="grid items-end gap-3.5 sm:grid-cols-[minmax(0,1fr)_auto]" id="retain-job">
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Completed Job ID</span>
+          <input class="field" name="job_id" required>
+        </label>
+        <button class="button justify-center" type="submit">Make permanent</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="retain-result" aria-live="polite"></pre>
+    </section>
+
+    {{if .HasConverter}}
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="convert-3ds">
+      <span class="eyebrow">Console format</span>
+      <h2 class="mb-2 mt-1 text-xl">Convert 3DS / CCI to CIA</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Choose a cataloged .3ds or .cci image. ROM Relay converts a copy into an encrypted CIA under the
+        configured 3DS CIA folder; the source is never changed.
+      </p>
+      <form class="grid items-end gap-3.5 sm:grid-cols-[minmax(0,1fr)_auto]" id="conversion-form">
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Source image</span>
+          <select class="field" name="artifact_id" required><option value="">Choose a .3ds or .cci file…</option></select>
+        </label>
+        <button class="button button--primary justify-center" type="submit">Convert to CIA</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="conversion-result" aria-live="polite">No conversion submitted yet.</pre>
+    </section>
+    {{end}}
+
+    {{if .HasRemote}}
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="remote-library">
+      <span class="eyebrow">Private SFTP</span>
+      <h2 class="mb-2 mt-1 text-xl">Search remote library</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Search only the private SFTP source configured on this relay. A result is not cataloged until it is
+        downloaded and validated.
+      </p>
+      <form class="grid items-end gap-3.5 sm:grid-cols-2" id="remote-search-form">
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Platform</span>
+          <select class="field" name="platform">
+            <option>gb</option><option>gbc</option><option>gba</option><option>nds</option><option>3ds</option>
+            <option>nes</option><option>snes</option><option>n64</option><option>genesis</option>
+          </select>
+        </label>
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Title search</span>
+          <input class="field" name="q" value="{{.RemoteQuery}}" required minlength="2" placeholder="Pokemon Emerald">
+        </label>
+        <button class="button button--primary justify-center sm:col-span-2" type="submit">Search SFTP</button>
+      </form>
+
+      <form class="mt-4 grid items-end gap-3.5 border-t border-[var(--color-line)] pt-4 sm:grid-cols-2" id="remote-fetch-form">
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Selected result ID</span>
+          <input class="field" name="result_id" required>
+        </label>
+        <label class="grid gap-1.5">
+          <span class="text-sm font-semibold">Remote 3DS CIA type</span>
+          <select class="field" name="encryption">
+            <option value="unencrypted" selected>Unencrypted / mobile emulator</option>
+            <option value="encrypted">Encrypted / FBI and real 3DS</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-2.5 sm:col-span-2">
+          <input class="size-4" type="checkbox" name="retain" value="true">
+          <span class="text-sm">Keep permanently after validation</span>
+        </label>
+        <label class="grid gap-1.5 sm:col-span-2">
+          <span class="text-sm font-semibold">Permanent destination</span>
+          <input class="field" name="destination" placeholder="gba or 3ds/cia/unencrypted">
+          <small class="text-[var(--color-muted)]">Required only when keeping the file.</small>
+        </label>
+        <button class="button justify-center sm:col-span-2" type="submit">Download and validate</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="remote-result" aria-live="polite"></pre>
+    </section>
+    {{end}}
+
+    <section class="surface scroll-mt-5 p-[clamp(18px,3vw,30px)]" id="dex-maintenance">
+      <span class="eyebrow">Pokédex database</span>
+      <h2 class="mb-2 mt-1 text-xl">Pokédex maintenance</h2>
+      <p class="mb-4 text-sm text-[var(--color-muted)]">
+        Prune removes stored Pokémon whose source save has been deleted, for every user. Per-user
+        clearing lives on the <a class="text-[var(--color-accent)]" href="/admin/users">Users</a> screen.
+      </p>
+      <form class="flex flex-wrap items-center gap-3" id="dex-prune">
+        <button class="button" type="submit">Prune orphaned Pokémon</button>
+      </form>
+      <pre class="mt-4 min-h-[54px] whitespace-pre-wrap rounded-lg border border-[var(--color-line)] bg-[var(--color-well)] p-3.5 text-sm" id="dex-prune-result" aria-live="polite">Nothing pruned yet this session.</pre>
+    </section>
+
+  </div>
+</div>
+{{end}}

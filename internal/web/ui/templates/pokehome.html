@@ -1,0 +1,81 @@
+{{define "pokehome"}}{{template "base" .}}{{end}}
+
+{{define "title"}}PokeHome{{end}}
+
+{{define "content"}}
+<div class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">PokeHome</h1>
+      <p class="m-0 mt-1 max-w-3xl text-sm text-[var(--color-muted)]">
+        Storage that outlives the save it came from. Deposit a Pokémon here and
+        send a copy to any save you own, any time, depositing never uses it up.
+      </p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <button class="button" type="button" data-create-open>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Create Pokémon
+      </button>
+      <button class="button button--primary" type="button" data-deposit-open>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+        Deposit Pokémon
+      </button>
+    </div>
+  </div>
+</div>
+
+<section>
+  <p class="m-0 mb-3 text-sm text-[var(--color-muted)]" id="pokehome-stats" role="status">Loading…</p>
+  <div class="pcbox" id="pokehome-box">
+    <div class="pcbox-head">
+      <button class="button button--small" type="button" id="pokehome-prev" aria-label="Previous box">‹</button>
+      <div>
+        <div class="pcbox-name" id="pokehome-box-name">BOX 1</div>
+        <div class="pcbox-page text-center" id="pokehome-box-page"></div>
+      </div>
+      <button class="button button--small" type="button" id="pokehome-next" aria-label="Next box">›</button>
+    </div>
+    <div class="pcbox-grid" id="pokehome-grid"></div>
+  </div>
+  <p class="mt-3 text-center text-sm text-[var(--color-muted)]" id="pokehome-empty" hidden>
+    Nothing deposited yet. Deposit a Pokémon and it shows up here, safe even if
+    the save it came from is later deleted.
+  </p>
+</section>
+
+{{/* Deposit: pick or upload a save, then check off which of its Pokémon join
+     PokeHome. Two steps in one modal rather than two modals, since the
+     second step's content depends entirely on the first step's choice. */}}
+<div class="modal-scrim" id="deposit-modal" data-deposit-scrim>
+  <div class="modal w-[min(560px,100%)]" role="dialog" aria-modal="true" aria-labelledby="deposit-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <h2 class="m-0 text-lg" id="deposit-title">Deposit Pokémon</h2>
+      <div id="deposit-step-save">
+        <p class="mt-1 text-sm text-[var(--color-muted)]">Choose a save to deposit from.</p>
+        <div class="mt-3 grid gap-1.5" id="deposit-save-list"></div>
+        <div class="mt-3 border-t border-[var(--color-line-soft)] pt-3">
+          {{template "save-upload" dict "Intro" "Or upload a save, its Pokémon are ready to deposit as soon as it's read."}}
+        </div>
+      </div>
+      <div id="deposit-step-mons" hidden>
+        <p class="mt-1 text-sm text-[var(--color-muted)]">
+          <button class="button button--small" type="button" id="deposit-back">‹ Back</button>
+          Select which Pokémon to deposit.
+        </p>
+        <div class="mt-3 grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2" id="deposit-mon-grid"></div>
+        <p class="mt-2 text-sm text-[var(--color-muted)]" id="deposit-mon-empty" hidden>
+          Every Pokémon from this save is already deposited.
+        </p>
+        <div class="mt-4 flex items-center gap-3">
+          <button class="button button--primary" type="button" id="deposit-confirm">Deposit selected</button>
+          <span class="text-sm text-[var(--color-muted)]" id="deposit-out"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{template "pokemon-editor-modals" .}}
+{{end}}

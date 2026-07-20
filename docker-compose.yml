@@ -1,0 +1,123 @@
+# ROM Relay full stack: the app plus PostgreSQL, in one command.
+#
+#   cp .env.example .env   # then edit it (set a strong POSTGRES_PASSWORD + tokens)
+#   docker compose up -d --build
+#
+# Run this from the repo root. The same .env file also holds the native
+# binary's secrets, so this docker section only adds the docker-only keys
+# (POSTGRES_PASSWORD, HTTP_PORT, ROMS_DIR, DRIVERS_DIR); running the native
+# ROMRelay.exe alongside it just ignores those extra keys. Works identically
+# on a Linux host and on Windows via Docker Desktop (WSL2). Host paths come
+# from .env so the same file runs on both; database and metadata use named
+# volumes managed by Docker.
+
+name: romrelay
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: romrelay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: romrelay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U romrelay -d romrelay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # PKHeX save-parsing sidecar (.NET). Reachable only on the internal compose
+  # network, never published to the host. The Go app calls it to parse uploaded
+  # Pokémon saves.
+  pkhex:
+    build:
+      context: ./sidecar/pkhex
+    restart: unless-stopped
+    expose:
+      - "8081"
+
+  # NDecrypt sidecar (.NET, wraps the NDecrypt.Core submodule): encrypts and
+  # decrypts raw .nds/.3ds/.cci cart dumps. Reachable only on the internal
+  # compose network. Build context is the repo root, not sidecar/ndecrypt,
+  # because its project references the third_party/ndecrypt submodule.
+  ndecrypt:
+    build:
+      context: .
+      dockerfile: sidecar/ndecrypt/Dockerfile
+    restart: unless-stopped
+    environment:
+      NDECRYPT_CONFIG: /keys/config.json
+    volumes:
+      # Operator-supplied key material (config.json, see
+      # third_party/ndecrypt/config-default.json for the shape), read-only.
+      # Same DRIVERS_DIR host root as the main app's 3ds/ directory, its own
+      # subfolder.
+      - "${DRIVERS_DIR:-./drivers}/ndecrypt:/keys:ro"
+    expose:
+      - "8082"
+
+  romrelay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      pkhex:
+        condition: service_started
+      ndecrypt:
+        condition: service_started
+    # App secrets (tokens, IGDB, SFTP password) are passed straight into the
+    # container environment, where ROM Relay reads them at runtime.
+    env_file:
+      - .env
+    environment:
+      # Point the app at the bundled Postgres. Overrides any DATABASE_URL in
+      # .env, since the compose service name `db` is only resolvable
+      # inside this network.
+      DATABASE_URL: postgres://romrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/romrelay?sslmode=disable
+      # Where the Go app reaches the PKHeX save-parsing sidecar.
+      POKEMON_SIDECAR_URL: http://pkhex:8081
+      # Where the Go app reaches the NDecrypt sidecar.
+      NDECRYPT_SIDECAR_URL: http://ndecrypt:8082
+      # The address to advertise in catalog/QR/download URLs. Behind the
+      # Cloudflare Tunnel, set PUBLIC_BASE_URL to the tunnel hostname in
+      # .env, e.g. PUBLIC_BASE_URL=https://romrelay.kringleslab.dev
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      ADVERTISE_IP: ${ADVERTISE_IP:-}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      # Your ROM library on the host. On Windows use a path like
+      # ROMS_DIR=D:/Rom Relay/platforms in .env; on Linux, an absolute path.
+      - "${ROMS_DIR:-./data/roms}:/app/data/roms"
+      # Optional drivers directory (read-only). Put boot9.bin at
+      # <DRIVERS_DIR>/3ds/boot9.bin to enable encrypted .3ds/.cci -> .cia
+      # conversion. The CIA-decryptor sub-directory is Windows-only and does not
+      # run in this Linux container. Defaults to ./drivers if unset.
+      - "${DRIVERS_DIR:-./drivers}:/app/internal/drivers:ro"
+      # The PokeAPI api-data submodule (read-only): the Pokédex reference fill
+      # reads these JSON files instead of calling pokeapi.co. Run
+      # `git submodule update --init` before `docker compose up`.
+      - "./third_party/api-data:/app/third_party/api-data:ro"
+      - romrelay-metadata:/app/data/metadata
+      - romrelay-patched:/app/data/patched
+      - romrelay-patches:/app/data/patches
+      # Users' uploaded game saves. Back this up: it is not in the database.
+      - romrelay-storage:/app/data/storage
+
+volumes:
+  pgdata:
+    name: romrelay-postgres-data
+  romrelay-storage:
+    name: romrelay-storage
+  romrelay-metadata:
+    name: romrelay-metadata
+  romrelay-patched:
+    name: romrelay-patched
+  romrelay-patches:
+    name: romrelay-patches

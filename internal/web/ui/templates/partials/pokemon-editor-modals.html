@@ -1,0 +1,224 @@
+{{/* Shared by PokeHome and the standalone Editor page: one Pokémon detail
+     view, one withdrawal (send-to-a-save) picker, one PKHeX field editor.
+     Neither page's own list markup differs, only how it gets to a mon, a
+     PC box slot vs. a save's flat Pokémon list, so the modals themselves,
+     and the JS wiring them (wireEditor/wireWithdrawFlow in pokehome.js),
+     are not duplicated per page. */}}
+{{define "pokemon-editor-modals"}}
+{{/* Slot detail: one Pokémon. Identity block plus two actions, Edit (opens
+     the editor modal) and Send to a save (opens the withdraw modal), same
+     shell the species panel and every other modal here uses. */}}
+<div class="modal-scrim" id="slot-modal" data-slot-scrim>
+  <div class="modal w-[min(480px,100%)]" role="dialog" aria-modal="true" aria-labelledby="slot-name">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <div class="flex items-start gap-4">
+        <span class="grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-well)]">
+          <img class="h-20 w-20 [image-rendering:pixelated]" id="slot-sprite" alt="" width="80" height="80">
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 class="m-0 text-xl capitalize" id="slot-name"></h2>
+          <p class="m-0 mt-1 text-sm text-[var(--color-muted)]" id="slot-meta"></p>
+          <div class="mt-2 flex flex-wrap gap-1.5" id="slot-badges"></div>
+        </div>
+      </div>
+      <p class="mt-3 text-xs text-[var(--color-faint)]" id="slot-deposited"></p>
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button class="button button--primary" type="button" id="slot-withdraw-open">Send to a save</button>
+        <button class="button" type="button" id="slot-edit-open">Edit</button>
+        <button class="button button--danger ml-auto" type="button" id="slot-delete">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{/* Withdraw: pick a destination save, then its box grid, the exact same
+     .pcbox/.pcslot markup PokeHome's own storage uses, in picker mode
+     (empty slots pickable, occupied slots inert). One component, two jobs. */}}
+<div class="modal-scrim" id="withdraw-modal" data-withdraw-scrim>
+  <div class="modal w-[min(560px,100%)]" role="dialog" aria-modal="true" aria-labelledby="withdraw-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <h2 class="m-0 text-lg" id="withdraw-title">Send to a save</h2>
+      <div id="withdraw-step-save">
+        <p class="mt-1 text-sm text-[var(--color-muted)]">Choose a destination.</p>
+        <div class="mt-3 grid gap-1.5" id="withdraw-save-list"></div>
+        <div class="mt-3 border-t border-[var(--color-line-soft)] pt-3">
+          {{template "save-upload" dict "Intro" "Or upload a save to send this Pokémon straight into it."}}
+        </div>
+      </div>
+      <div id="withdraw-step-boxes" hidden>
+        <p class="mt-1 text-sm text-[var(--color-muted)]">
+          <button class="button button--small" type="button" id="withdraw-back">‹ Back</button>
+          Pick an empty slot.
+        </p>
+        <div class="mt-3 pcbox">
+          <div class="pcbox-head">
+            <button class="button button--small" type="button" id="withdraw-prev" aria-label="Previous box">‹</button>
+            <div>
+              <div class="pcbox-name" id="withdraw-box-name">BOX 1</div>
+              <div class="pcbox-page text-center" id="withdraw-box-page"></div>
+            </div>
+            <button class="button button--small" type="button" id="withdraw-next" aria-label="Next box">›</button>
+          </div>
+          <div class="pcbox-grid" id="withdraw-grid"></div>
+        </div>
+        <div class="mt-3 text-sm text-[var(--color-muted)]" id="withdraw-out"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{/* Editor: PKHeX used directly, not just for transfer. Every field is
+     optional to change, leaving one alone leaves it exactly as PKHeX wrote
+     it. Nature/ability/held item are names, the same ones this Pokémon's own
+     card already shows, not PKHeX's internal numeric ids. The same modal
+     doubles as the "create from scratch" form, id="editor-new-fields"
+     (Species/Generation) only shows for that flow; see wireEditor's create
+     argument. */}}
+<div class="modal-scrim" id="editor-modal" data-editor-scrim>
+  <div class="modal w-[min(680px,100%)]" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <div class="flex items-start gap-3">
+        <span class="grid h-16 w-16 shrink-0 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-well)]" id="editor-sprite-wrap">
+          <img class="h-14 w-14 [image-rendering:pixelated]" id="editor-sprite" alt="" width="56" height="56">
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 class="m-0 text-lg" id="editor-title">Edit Pokémon</h2>
+          <div class="mt-1 flex flex-wrap gap-1.5" id="editor-types"></div>
+          <p class="mt-1 text-sm text-[var(--color-muted)]" id="editor-intro">
+            Changes are written back byte-for-byte through the same PKHeX
+            library the Save Vault uses to read your saves. Leave a field as
+            it is to keep it unchanged.
+          </p>
+        </div>
+      </div>
+
+      <div id="editor-form-body">
+      <div class="mt-4 grid gap-3 sm:grid-cols-2" id="editor-new-fields" hidden>
+        <label class="grid gap-1 text-sm sm:col-span-2">
+          <span class="text-[var(--color-muted)]">Species</span>
+          <div class="flex items-center gap-2">
+            <img class="h-7 w-7 shrink-0 [image-rendering:pixelated]" id="editor-species-icon" alt="" hidden>
+            <input class="field" id="editor-species" type="text" autocomplete="off" placeholder="Search a species…">
+          </div>
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Generation</span>
+          <select class="field" id="editor-generation">
+            <option value="1">Generation 1</option>
+            <option value="2">Generation 2</option>
+            <option value="3">Generation 3</option>
+            <option value="4">Generation 4</option>
+            <option value="5">Generation 5</option>
+            <option value="6">Generation 6</option>
+            <option value="7">Generation 7</option>
+            <option value="8">Generation 8</option>
+            <option value="9" selected>Generation 9</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-3 sm:grid-cols-2">
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Nickname</span>
+          <input class="field" id="editor-nickname" type="text" maxlength="12" autocomplete="off">
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Original trainer</span>
+          <input class="field" id="editor-ot" type="text" maxlength="12" autocomplete="off">
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Level</span>
+          <input class="field" id="editor-level" type="number" min="1" max="100">
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="flex items-center gap-1 text-[var(--color-muted)]">
+            Form
+            <span class="formhint" tabindex="0" title="An alternate look for this species, a different Deoxys form, a regional variant, and so on. 0 is always the default/base form. Check the species panel in the Pokédex to see what forms this species has.">?</span>
+          </span>
+          <input class="field" id="editor-form" type="number" min="0">
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Nature</span>
+          <select class="field" id="editor-nature"></select>
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Gender</span>
+          <select class="field" id="editor-gender">
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+            <option value="-">Genderless</option>
+          </select>
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Ability</span>
+          <input class="field" id="editor-ability" type="text" autocomplete="off" placeholder="Search an ability…">
+          <span class="text-xs text-[var(--color-faint)]" id="editor-ability-hint"></span>
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Held item</span>
+          <div class="flex items-center gap-2">
+            <img class="h-7 w-7 shrink-0 [image-rendering:pixelated]" id="editor-held-item-icon" alt="" hidden>
+            <input class="field" id="editor-held-item" type="text" autocomplete="off" placeholder="Search an item, or leave blank for none">
+          </div>
+        </label>
+        <label class="grid gap-1 text-sm">
+          <span class="text-[var(--color-muted)]">Ball</span>
+          <div class="flex items-center gap-2">
+            <img class="h-7 w-7 shrink-0 [image-rendering:pixelated]" id="editor-ball-icon" alt="" hidden>
+            <input class="field" id="editor-ball" type="text" autocomplete="off" placeholder="Search a Poké Ball…">
+          </div>
+        </label>
+        <label class="mt-1 flex items-center gap-2 text-sm sm:mt-6">
+          <input id="editor-shiny" type="checkbox" class="h-4 w-4">
+          <span>Shiny</span>
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-3 sm:grid-cols-2">
+        <div>
+          <span class="eyebrow">IVs</span>
+          <p class="mt-1 mb-1 text-xs text-[var(--color-faint)]">0–31 each.</p>
+          <div class="statgrid mt-1" id="editor-ivs"></div>
+        </div>
+        <div>
+          <span class="eyebrow">EVs</span>
+          <p class="mt-1 mb-1 text-xs text-[var(--color-faint)]">0–252 each, 510 total.</p>
+          <div class="statgrid mt-1" id="editor-evs"></div>
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <span class="eyebrow">Moves</span>
+        <p class="mt-1 mb-2 text-xs text-[var(--color-faint)]">Search by name, up to four.</p>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4" id="editor-moves"></div>
+      </div>
+
+      <div class="mt-5 flex items-center gap-3">
+        <button class="button button--primary" type="button" id="editor-save">Save changes</button>
+        <div class="text-sm text-[var(--color-muted)]" id="editor-out"></div>
+      </div>
+      </div>
+
+      {{/* Shown only right after a successful create, the create form above
+           is hidden while this is visible. Depositing to PokeHome used to
+           happen automatically and silently; every option here is opt-in
+           instead (see Additional Notes item 4). */}}
+      <div class="mt-2" id="editor-postcreate" hidden>
+        <p class="m-0 text-sm text-[var(--color-muted)]"><strong id="editor-postcreate-name"></strong> was created and is sitting in storage. What would you like to do with it?</p>
+        <div class="mt-3 grid gap-2 text-sm">
+          <label class="flex items-center gap-2"><input type="checkbox" id="editor-postcreate-deposit" class="h-4 w-4">Deposit to PokeHome</label>
+          <label class="flex items-center gap-2"><input type="checkbox" id="editor-postcreate-download" class="h-4 w-4">Download the .pkm file</label>
+          <label class="flex items-center gap-2"><input type="checkbox" id="editor-postcreate-inject" class="h-4 w-4">Send it to a save</label>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button class="button button--primary" type="button" id="editor-postcreate-done">Done</button>
+          <span class="text-sm text-[var(--color-muted)]" id="editor-postcreate-out"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}

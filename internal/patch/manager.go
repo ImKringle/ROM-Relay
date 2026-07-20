@@ -107,7 +107,9 @@ func (m *Manager) Create(ctx context.Context, o CreateOptions) (Job, error) {
 		sum := sha256.Sum256(o.SourceUpload)
 		a = catalog.Artifact{ID: "upload-" + hex.EncodeToString(sum[:12]), Platform: p.ID, Name: filepath.Base(o.SourceName), Extension: strings.ToLower(filepath.Ext(o.SourceName)), Size: int64(len(o.SourceUpload)), SHA256: hex.EncodeToString(sum[:]), CRC32: fmt.Sprintf("%08x", crc32.ChecksumIEEE(o.SourceUpload))}
 	} else {
-		a, err = m.store.Artifact(ctx, o.ArtifactID)
+		// Ensure the base ROM is hashed even if the background hash pass has not
+		// reached it yet, so recipe base-checksum validation works immediately.
+		a, err = m.store.EnsureArtifactHashed(ctx, o.ArtifactID)
 		if err != nil {
 			return Job{}, err
 		}

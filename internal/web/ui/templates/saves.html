@@ -1,0 +1,20 @@
+{{define "saves"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Save Vault{{end}}
+
+{{define "content"}}
+<div class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Save Vault</h1>
+  {{/* Shown open, not behind a disclosure: uploading is what this page is for.
+       The longer explanation (versioning, newest-first) used to sit here as a
+       permanent paragraph; it's now a one-time toast (see saves.js) so it
+       doesn't take up header space on every return visit. */}}
+  <div class="mt-4 max-w-4xl">
+    {{template "save-upload" dict "Intro" "Choose a save and ROM Relay works out which game it is from. Pokémon saves also update your Pokédex."}}
+  </div>
+</div>
+
+<div class="grid max-w-[1800px] items-start gap-4 grid-cols-[repeat(auto-fill,minmax(320px,1fr))]" id="saves-list">
+  <p class="text-sm text-[var(--color-muted)]">Loading…</p>
+</div>
+{{end}}

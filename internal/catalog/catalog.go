@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -91,35 +92,54 @@ type MetadataRecord struct {
 	Genre, ReleaseDate, Players, Rating, CRC32, MD5, SHA1     string
 }
 type Store struct {
-	db         *sql.DB
-	dbPath     string
-	root       string
-	artworkDir string
-	extraRoots []artifactRoot
-	now        func() time.Time
-	activeMu   sync.Mutex
-	active     map[string]int
+	db           *sql.DB
+	dialect      dialect
+	dbPath       string
+	root         string
+	artworkDir   string
+	extraRoots   []artifactRoot
+	now          func() time.Time
+	scanProgress func(files int, hashedBytes int64)
+	activeMu     sync.Mutex
+	active       map[string]int
 }
 type artifactRoot struct{ path, kind string }
 
+// Open connects the catalog to its backing database. A SQLite file path uses the
+// embedded single-writer SQLite engine; the Postgres backend is selected by a
+// postgres:// DSN (see openDatabase).
 func Open(path, root string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, d, err := openDatabase(path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
-		if _, err = db.Exec(q); err != nil {
-			db.Close()
-			return nil, err
-		}
-	}
-	s := &Store{db: db, dbPath: path, root: root, now: time.Now, active: map[string]int{}}
+	s := &Store{db: db, dialect: d, dbPath: path, root: root, now: time.Now, active: map[string]int{}}
 	if err = s.migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// openDatabase opens the driver for the given DSN and applies backend-specific
+// connection setup. SQLite uses a single connection with WAL and foreign keys;
+// this is where the Postgres branch attaches.
+func openDatabase(dsn string) (*sql.DB, dialect, error) {
+	if isPostgresDSN(dsn) {
+		return openPostgres(dsn)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, dialect{}, err
+	}
+	db.SetMaxOpenConns(1)
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
+		if _, err = db.Exec(q); err != nil {
+			db.Close()
+			return nil, dialect{}, err
+		}
+	}
+	return db, dialect{postgres: false}, nil
 }
 
 type PlatformRuntimeStats struct {
@@ -137,7 +157,7 @@ type RuntimeStats struct {
 }
 
 func (s *Store) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT games.id,games.platform,games.rom_patch,artifacts.path,artifacts.extension FROM games LEFT JOIN artifacts ON artifacts.game_id=games.id ORDER BY games.id`)
+	rows, err := s.queryCtx(ctx, `SELECT games.id,games.platform,games.rom_patch,artifacts.path,artifacts.extension FROM games LEFT JOIN artifacts ON artifacts.game_id=games.id ORDER BY games.id`)
 	if err != nil {
 		return RuntimeStats{}, err
 	}
@@ -199,9 +219,13 @@ func (s *Store) RuntimeStats(ctx context.Context) (RuntimeStats, error) {
 	return out, nil
 }
 func (s *Store) Close() error {
-	// A clean owner checkpoints WAL before releasing SQLite. This keeps normal
-	// shutdowns restart-friendly and distinguishes them from forced termination.
-	_, checkpointErr := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	// A clean SQLite owner checkpoints WAL before releasing the file. This keeps
+	// normal shutdowns restart-friendly and distinguishes them from forced
+	// termination. Postgres has no such per-connection sidecar to flush.
+	var checkpointErr error
+	if !s.dialect.postgres {
+		_, checkpointErr = s.exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
 	closeErr := s.db.Close()
 	return errors.Join(checkpointErr, closeErr)
 }
@@ -211,6 +235,17 @@ func (s *Store) SetClock(now func() time.Time) {
 	}
 }
 func (s *Store) SetArtworkDirectory(path string) { s.artworkDir = path }
+
+// Root returns the main library root every platform directory (3ds, gba, ...)
+// lives under, so callers writing a new file into the library know where to
+// put it without duplicating that layout decision.
+func (s *Store) Root() string { return s.root }
+
+// SetScanProgress registers a callback invoked during Reconcile with the number
+// of library files indexed so far and the cumulative bytes hashed. It lets a
+// large first-time scan (multi-gigabyte ROMs over a slow mount) report progress
+// instead of appearing hung. The callback must be cheap and non-blocking.
+func (s *Store) SetScanProgress(fn func(files int, hashedBytes int64)) { s.scanProgress = fn }
 func (s *Store) RemoveGameArtwork(gameID string) {
 	if s.artworkDir == "" {
 		return
@@ -221,7 +256,7 @@ func (s *Store) RemoveGameArtwork(gameID string) {
 }
 func (s *Store) RemoveGameArtworkIfOrphan(ctx context.Context, gameID string) {
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE game_id=?`, gameID).Scan(&count); err == nil && count == 0 {
+	if err := s.queryRowCtx(ctx, `SELECT COUNT(*) FROM artifacts WHERE game_id=?`, gameID).Scan(&count); err == nil && count == 0 {
 		s.RemoveGameArtwork(gameID)
 	}
 }
@@ -234,13 +269,37 @@ func (s *Store) AddExternalArtifactRoot(root string) {
 	s.extraRoots = append(s.extraRoots, artifactRoot{root, "external"})
 }
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS games(
+	if s.dialect.postgres {
+		return s.migratePostgres()
+	}
+	_, err := s.exec(`CREATE TABLE IF NOT EXISTS games(
 id TEXT PRIMARY KEY, platform TEXT NOT NULL, title TEXT NOT NULL, developer TEXT NOT NULL DEFAULT '', publisher TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '', rom_patch BOOLEAN NOT NULL DEFAULT FALSE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE, platform TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, extension TEXT NOT NULL, size INTEGER NOT NULL, mod_time INTEGER NOT NULL, sha256 TEXT NOT NULL, sha1 TEXT NOT NULL, md5 TEXT NOT NULL, crc32 TEXT NOT NULL, header_json TEXT NOT NULL DEFAULT '{}', patched BOOLEAN NOT NULL DEFAULT FALSE, expires_at INTEGER, retain BOOLEAN NOT NULL DEFAULT FALSE);
 CREATE INDEX IF NOT EXISTS artifacts_game ON artifacts(game_id);
 CREATE TABLE IF NOT EXISTS patch_files(id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,size INTEGER NOT NULL,sha256 TEXT NOT NULL,extension TEXT NOT NULL,mod_time INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS patch_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,artifact_id TEXT NOT NULL,output_name TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '',retain BOOLEAN NOT NULL DEFAULT FALSE,expires_at INTEGER);
-CREATE TABLE IF NOT EXISTS scheduler_state(name TEXT PRIMARY KEY,last_run INTEGER NOT NULL,status TEXT NOT NULL DEFAULT '');`)
+CREATE TABLE IF NOT EXISTS scheduler_state(name TEXT PRIMARY KEY,last_run INTEGER NOT NULL,status TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL DEFAULT '',role TEXT NOT NULL DEFAULT 'user',created_at INTEGER NOT NULL,disabled BOOLEAN NOT NULL DEFAULT FALSE,must_change_password BOOLEAN NOT NULL DEFAULT FALSE);
+CREATE TABLE IF NOT EXISTS pokemon_instances(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,fingerprint TEXT NOT NULL,species INTEGER NOT NULL,species_name TEXT NOT NULL DEFAULT '',nickname TEXT NOT NULL DEFAULT '',level INTEGER NOT NULL DEFAULT 0,nature TEXT NOT NULL DEFAULT '',ability TEXT NOT NULL DEFAULT '',gender TEXT NOT NULL DEFAULT '',shiny BOOLEAN NOT NULL DEFAULT FALSE,is_egg BOOLEAN NOT NULL DEFAULT FALSE,form INTEGER NOT NULL DEFAULT 0,generation INTEGER NOT NULL DEFAULT 0,ivs_json TEXT NOT NULL DEFAULT '{}',evs_json TEXT NOT NULL DEFAULT '{}',moves_json TEXT NOT NULL DEFAULT '[]',held_item TEXT NOT NULL DEFAULT '',ball INTEGER NOT NULL DEFAULT 0,pid INTEGER NOT NULL DEFAULT 0,origin_game TEXT NOT NULL DEFAULT '',origin_ot TEXT NOT NULL DEFAULT '',source_save TEXT NOT NULL DEFAULT '',origin_save_id TEXT NOT NULL DEFAULT '',pokemon_binary BLOB,created_at INTEGER NOT NULL,home_deposited_at INTEGER,home_last_withdrawn_at INTEGER);
+CREATE UNIQUE INDEX IF NOT EXISTS pokemon_owner_fingerprint ON pokemon_instances(owner_id,fingerprint);
+CREATE INDEX IF NOT EXISTS pokemon_owner_species ON pokemon_instances(owner_id,species);
+CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS game_dex(owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game TEXT NOT NULL,trainer TEXT NOT NULL DEFAULT '',species INTEGER NOT NULL,seen BOOLEAN NOT NULL DEFAULT FALSE,caught BOOLEAN NOT NULL DEFAULT FALSE,PRIMARY KEY(owner_id,game,trainer,species));
+CREATE TABLE IF NOT EXISTS game_dex_meta(owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game TEXT NOT NULL,max_species INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner_id,game));
+CREATE TABLE IF NOT EXISTS saves(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game_id TEXT NOT NULL DEFAULT '',game_label TEXT NOT NULL DEFAULT '',file_name TEXT NOT NULL DEFAULT '',size_bytes INTEGER NOT NULL DEFAULT 0,sha256 TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'upload',uploaded_at INTEGER NOT NULL,parsed BOOLEAN NOT NULL DEFAULT FALSE,parsed_game TEXT NOT NULL DEFAULT '',parsed_trainer TEXT NOT NULL DEFAULT '',parsed_playtime TEXT NOT NULL DEFAULT '',pokemon_count INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS saves_owner_game ON saves(owner_id,game_id,uploaded_at DESC);
+	CREATE TABLE IF NOT EXISTS pokedex_species(dex INTEGER PRIMARY KEY,name TEXT NOT NULL DEFAULT '',genus TEXT NOT NULL DEFAULT '',generation TEXT NOT NULL DEFAULT '',types TEXT NOT NULL DEFAULT '',height_dm INTEGER NOT NULL DEFAULT 0,weight_hg INTEGER NOT NULL DEFAULT 0,flavor_text TEXT NOT NULL DEFAULT '',is_legendary BOOLEAN NOT NULL DEFAULT FALSE,is_mythical BOOLEAN NOT NULL DEFAULT FALSE,updated_at INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE IF NOT EXISTS pokedex_evolution(from_dex INTEGER NOT NULL,to_dex INTEGER NOT NULL,trigger TEXT NOT NULL DEFAULT '',min_level INTEGER NOT NULL DEFAULT 0,item TEXT NOT NULL DEFAULT '',condition TEXT NOT NULL DEFAULT '',PRIMARY KEY(from_dex,to_dex));
+	CREATE TABLE IF NOT EXISTS pokedex_regional(dex INTEGER NOT NULL,pokedex TEXT NOT NULL,entry_number INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(dex,pokedex));
+	CREATE TABLE IF NOT EXISTS pokedex_encounters(dex INTEGER NOT NULL,version TEXT NOT NULL,location TEXT NOT NULL,method TEXT NOT NULL DEFAULT '',conditions TEXT NOT NULL DEFAULT '',min_level INTEGER NOT NULL DEFAULT 0,max_level INTEGER NOT NULL DEFAULT 0,chance INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(dex,version,location,method,conditions));
+	CREATE TABLE IF NOT EXISTS pokedex_encounters_done(dex INTEGER PRIMARY KEY,fetched_at INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE IF NOT EXISTS pokedex_moves(name TEXT PRIMARY KEY,type TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT '',power INTEGER NOT NULL DEFAULT 0,accuracy INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE IF NOT EXISTS pokedex_learnset(dex INTEGER NOT NULL,move TEXT NOT NULL,method TEXT NOT NULL,level INTEGER NOT NULL DEFAULT 0,generations TEXT NOT NULL DEFAULT '',PRIMARY KEY(dex,move,method));
+	CREATE TABLE IF NOT EXISTS pokedex_learnset_done(dex INTEGER PRIMARY KEY,fetched_at INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE IF NOT EXISTS trainer_profiles(owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game TEXT NOT NULL,tid INTEGER NOT NULL,sid INTEGER NOT NULL,ot TEXT NOT NULL DEFAULT '',gender INTEGER NOT NULL DEFAULT 0,language INTEGER NOT NULL DEFAULT 0,played_minutes INTEGER NOT NULL DEFAULT 0,money INTEGER NOT NULL DEFAULT 0,money_max INTEGER NOT NULL DEFAULT 0,progress_kind TEXT NOT NULL DEFAULT '',progress_count INTEGER NOT NULL DEFAULT 0,progress_max INTEGER NOT NULL DEFAULT 0,hof_clears INTEGER,notes TEXT NOT NULL DEFAULT '{}',trusted BOOLEAN NOT NULL DEFAULT TRUE,source_save_id TEXT NOT NULL DEFAULT '',updated_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner_id,game,tid,sid));
+	CREATE TABLE IF NOT EXISTS trainer_hof(owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game TEXT NOT NULL,tid INTEGER NOT NULL,sid INTEGER NOT NULL,entry_index INTEGER NOT NULL,slot INTEGER NOT NULL,species INTEGER NOT NULL DEFAULT 0,level INTEGER NOT NULL DEFAULT 0,nickname TEXT NOT NULL DEFAULT '',PRIMARY KEY(owner_id,game,tid,sid,entry_index,slot));
+	CREATE TABLE IF NOT EXISTS api_keys(id TEXT PRIMARY KEY,name TEXT NOT NULL,token TEXT NOT NULL UNIQUE,created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at INTEGER NOT NULL,last_used_at INTEGER,revoked_at INTEGER);`)
 	if err != nil {
 		return err
 	}
@@ -271,6 +330,33 @@ CREATE TABLE IF NOT EXISTS scheduler_state(name TEXT PRIMARY KEY,last_run INTEGE
 			return err
 		}
 	}
+	if err := s.ensureColumn("pokemon_instances", "origin_save_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// origin_slot records where this Pokémon sat in its origin save at ingest
+	// time ("party:2", "box:3:12"), the Editor's Party/Box grouping needs it
+	// to show where each Pokémon actually lives, not just a flat list.
+	if err := s.ensureColumn("pokemon_instances", "origin_slot", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	for _, column := range []string{"home_deposited_at", "home_last_withdrawn_at"} {
+		if err := s.ensureColumn("pokemon_instances", column, "INTEGER"); err != nil {
+			return err
+		}
+	}
+	for _, column := range []string{"disabled", "must_change_password"} {
+		if err := s.ensureColumn("users", column, "BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
+			return err
+		}
+	}
+	// Storage boxes were withdrawn in favour of the user Pokédex; drop their
+	// columns from databases created while the feature existed. The placements
+	// were derived from insertion order, so nothing of value is lost.
+	for _, column := range []string{"box", "box_slot"} {
+		if err := s.dropColumnIfPresent("pokemon_instances", column); err != nil {
+			return err
+		}
+	}
 	if err := s.ensureColumn("games", "patch_file_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
@@ -291,20 +377,100 @@ CREATE TABLE IF NOT EXISTS scheduler_state(name TEXT PRIMARY KEY,last_run INTEGE
 			return err
 		}
 	}
-	if _, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS libretro_entries(
+	if _, err = s.exec(`CREATE TABLE IF NOT EXISTS libretro_entries(
 platform TEXT NOT NULL,name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',region TEXT NOT NULL DEFAULT '',developer TEXT NOT NULL DEFAULT '',publisher TEXT NOT NULL DEFAULT '',genre TEXT NOT NULL DEFAULT '',release_date TEXT NOT NULL DEFAULT '',players TEXT NOT NULL DEFAULT '',rating TEXT NOT NULL DEFAULT '',crc32 TEXT NOT NULL DEFAULT '',md5 TEXT NOT NULL DEFAULT '',sha1 TEXT NOT NULL DEFAULT '',PRIMARY KEY(platform,name,sha1,crc32));
 CREATE INDEX IF NOT EXISTS libretro_sha1 ON libretro_entries(platform,sha1);
 CREATE INDEX IF NOT EXISTS libretro_md5 ON libretro_entries(platform,md5);
 CREATE INDEX IF NOT EXISTS libretro_crc32 ON libretro_entries(platform,crc32);`); err != nil {
 		return err
 	}
+	if err := s.migrateGameDexTrainer(); err != nil {
+		return err
+	}
+	for name, definition := range map[string]string{
+		"egg_groups":    "TEXT NOT NULL DEFAULT ''",
+		"gender_rate":   "INTEGER NOT NULL DEFAULT -1",
+		"hatch_counter": "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if err := s.ensureColumn("pokedex_species", name, definition); err != nil {
+			return err
+		}
+	}
+	for name, definition := range map[string]string{
+		"stat_hp":  "INTEGER NOT NULL DEFAULT 0",
+		"stat_atk": "INTEGER NOT NULL DEFAULT 0",
+		"stat_def": "INTEGER NOT NULL DEFAULT 0",
+		"stat_spa": "INTEGER NOT NULL DEFAULT 0",
+		"stat_spd": "INTEGER NOT NULL DEFAULT 0",
+		"stat_spe": "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if err := s.ensureColumn("pokedex_species", name, definition); err != nil {
+			return err
+		}
+	}
+	for name, definition := range map[string]string{
+		"abilities":      "TEXT NOT NULL DEFAULT ''",
+		"hidden_ability": "TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.ensureColumn("pokedex_species", name, definition); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func (s *Store) ensureColumn(table, name, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
-	if err != nil {
+// migrateGameDexTrainer adds the trainer column and widens game_dex's primary
+// key to include it.
+//
+// This cannot be an ensureColumn: the primary key changes, SQLite cannot ALTER
+// one, and the CREATE TABLE IF NOT EXISTS above is a no-op on a database that
+// already has the table. Without the rebuild an upgraded database keeps a
+// 3-column key while UpsertGameDex issues ON CONFLICT(owner_id,game,trainer,
+// species), which needs a matching unique index and errors without one, so a
+// fresh database would work and an upgraded one would fail.
+func (s *Store) migrateGameDexTrainer() error {
+	found, err := s.hasColumn("game_dex", "trainer")
+	if err != nil || found {
 		return err
+	}
+	// Foreign keys are dropped for the swap: the rename would otherwise be seen
+	// as retargeting game_dex's own reference to users.
+	if _, err := s.exec(`PRAGMA foreign_keys=off`); err != nil {
+		return err
+	}
+	defer s.exec(`PRAGMA foreign_keys=on`)
+	_, err = s.exec(`CREATE TABLE game_dex_new(owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,game TEXT NOT NULL,trainer TEXT NOT NULL DEFAULT '',species INTEGER NOT NULL,seen BOOLEAN NOT NULL DEFAULT FALSE,caught BOOLEAN NOT NULL DEFAULT FALSE,PRIMARY KEY(owner_id,game,trainer,species));
+INSERT INTO game_dex_new(owner_id,game,trainer,species,seen,caught) SELECT owner_id,game,'',species,seen,caught FROM game_dex;
+DROP TABLE game_dex;
+ALTER TABLE game_dex_new RENAME TO game_dex;`)
+	return err
+}
+
+func (s *Store) ensureColumn(table, name, definition string) error {
+	found, err := s.hasColumn(table, name)
+	if err != nil || found {
+		return err
+	}
+	_, err = s.exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition)
+	return err
+}
+
+// dropColumnIfPresent removes a column from an existing SQLite database, for
+// features that have been withdrawn. It is a no-op on databases created after
+// the column was removed from the schema.
+func (s *Store) dropColumnIfPresent(table, name string) error {
+	found, err := s.hasColumn(table, name)
+	if err != nil || !found {
+		return err
+	}
+	_, err = s.exec(`ALTER TABLE ` + table + ` DROP COLUMN ` + name)
+	return err
+}
+
+func (s *Store) hasColumn(table, name string) (bool, error) {
+	rows, err := s.query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
 	}
 	found := false
 	for rows.Next() {
@@ -314,15 +480,14 @@ func (s *Store) ensureColumn(table, name, definition string) error {
 		var defaultValue any
 		if err = rows.Scan(&cid, &column, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		found = found || column == name
 	}
-	if err = rows.Close(); err != nil || found {
-		return err
+	if err = rows.Close(); err != nil {
+		return false, err
 	}
-	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition)
-	return err
+	return found, nil
 }
 
 func (s *Store) EnsureDirectories() error {
@@ -343,13 +508,46 @@ func (s *Store) EnsureDirectories() error {
 	return os.MkdirAll(filepath.Join(s.root, "3ds", "cia", "unencrypted"), 0755)
 }
 
-// Reconcile recursively indexes supported files. Unchanged size/modtime pairs
-// reuse stored fingerprints, so every changed byte stream is read only once.
+// Reconcile recursively indexes supported files from their headers alone, so a
+// large library becomes browsable quickly. Content hashes are computed
+// separately by HashPending. Unchanged size/modtime pairs reuse the stored
+// record, so each file is inspected only once.
 func (s *Store) Reconcile(ctx context.Context) error {
 	if err := s.EnsureDirectories(); err != nil {
 		return err
 	}
+	// Loaded once so each file on disk is checked against the catalog in
+	// memory, rather than a "SELECT count(*)" round-trip per file.
+	type fileStat struct{ size, modTime int64 }
+	indexed := map[string]fileStat{}
+	rows0, err := s.queryCtx(ctx, `SELECT path, size, mod_time FROM artifacts`)
+	if err != nil {
+		return err
+	}
+	for rows0.Next() {
+		var p string
+		var fs fileStat
+		if err := rows0.Scan(&p, &fs.size, &fs.modTime); err != nil {
+			rows0.Close()
+			return err
+		}
+		indexed[p] = fs
+	}
+	if err := rows0.Close(); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
+	var scanned int
+	var lastReport time.Time
+	report := func(force bool) {
+		if s.scanProgress == nil {
+			return
+		}
+		if force || time.Since(lastReport) >= 250*time.Millisecond {
+			lastReport = time.Now()
+			s.scanProgress(scanned, 0)
+		}
+	}
 	roots := append([]artifactRoot{{s.root, "library"}}, s.extraRoots...)
 	for _, rootInfo := range roots {
 		scanRoot := rootInfo.path
@@ -392,21 +590,19 @@ func (s *Store) Reconcile(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			var n int
-			if err = s.db.QueryRow(`SELECT count(*) FROM artifacts WHERE path=? AND size=? AND mod_time=?`, abs, st.Size(), st.ModTime().UnixNano()).Scan(&n); err != nil {
-				return err
-			}
-			if n == 1 {
+			if fs, ok := indexed[abs]; ok && fs.size == st.Size() && fs.modTime == st.ModTime().UnixNano() {
 				// Lightweight metadata rules may improve between releases. Apply
 				// them to cached files without re-reading multi-gigabyte ROMs.
 				if region := regionFromFilename(filepath.Base(abs)); region != "" {
-					if _, err = s.db.Exec(`UPDATE games SET region=?,updated_at=? WHERE id=(SELECT game_id FROM artifacts WHERE path=?) AND region='' AND metadata_source NOT LIKE 'manual%'`, region, time.Now().Unix(), abs); err != nil {
+					if _, err = s.exec(`UPDATE games SET region=?,updated_at=? WHERE id=(SELECT game_id FROM artifacts WHERE path=?) AND region='' AND metadata_source NOT LIKE 'manual%'`, region, time.Now().Unix(), abs); err != nil {
 						return err
 					}
 				}
+				scanned++
+				report(false)
 				return nil
 			}
-			a, err := fingerprint(ctx, abs, p, st)
+			a, err := indexArtifact(abs, p, st)
 			if err != nil {
 				return err
 			}
@@ -417,13 +613,19 @@ func (s *Store) Reconcile(ctx context.Context) error {
 				sum := sha256.Sum256([]byte(a.Platform + "\x00patched\x00" + normalized))
 				a.GameID = hex.EncodeToString(sum[:12])
 			}
-			return s.upsert(a)
+			if err := s.upsert(a); err != nil {
+				return err
+			}
+			scanned++
+			report(false)
+			return nil
 		})
 		if err != nil {
 			return err
 		}
 	}
-	rows, err := s.db.Query(`SELECT path FROM artifacts`)
+	report(true)
+	rows, err := s.query(`SELECT path FROM artifacts`)
 	if err != nil {
 		return err
 	}
@@ -440,55 +642,209 @@ func (s *Store) Reconcile(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, p := range stale {
-		if _, err = s.db.Exec(`DELETE FROM artifacts WHERE path=?`, p); err != nil {
+		if _, err = s.exec(`DELETE FROM artifacts WHERE path=?`, p); err != nil {
 			return err
 		}
 	}
-	_, err = s.db.Exec(`DELETE FROM games WHERE NOT EXISTS(SELECT 1 FROM artifacts WHERE artifacts.game_id=games.id)`)
+	_, err = s.exec(`DELETE FROM games WHERE NOT EXISTS(SELECT 1 FROM artifacts WHERE artifacts.game_id=games.id)`)
 	return err
 }
 
-func fingerprint(ctx context.Context, path string, p Platform, st os.FileInfo) (Artifact, error) {
+// EnsureArtifactHashed returns the artifact, computing and persisting its content
+// hashes first if the background pass has not reached it yet. Callers that need
+// hashes immediately, patch base-ROM validation, for example, use this so they
+// do not depend on background hashing having finished.
+func (s *Store) EnsureArtifactHashed(ctx context.Context, id string) (Artifact, error) {
+	a, err := s.Artifact(ctx, id)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if a.SHA256 != "" {
+		return a, nil
+	}
+	sha, sha1Hex, md5Hex, crc32Hex, err := hashFile(ctx, a.Path, nil)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if _, err := s.execCtx(ctx, `UPDATE artifacts SET sha256=?,sha1=?,md5=?,crc32=? WHERE id=? AND sha256=''`, sha, sha1Hex, md5Hex, crc32Hex, id); err != nil {
+		return Artifact{}, err
+	}
+	a.SHA256, a.SHA1, a.MD5, a.CRC32 = sha, sha1Hex, md5Hex, crc32Hex
+	return a, nil
+}
+
+// HashPending computes the content hashes for artifacts that Reconcile indexed
+// from their headers but has not hashed yet (sha256 == ""). It processes the
+// smallest files first, so metadata for the bulk of a library fills in quickly
+// while a few multi-gigabyte images finish last. Files are hashed across a
+// bounded pool of workers (disk I/O and hashing both parallelize well across
+// the many independent ROMs in a typical library), while database writes stay
+// serialized behind the store's single SQLite connection. It is resumable: an
+// interrupted run leaves the remaining artifacts unhashed for the next call.
+// progress, when non-nil, receives the number of files hashed, the total
+// pending, and the cumulative bytes hashed.
+func (s *Store) HashPending(ctx context.Context, progress func(done, total int, hashedBytes int64)) error {
+	rows, err := s.queryCtx(ctx, `SELECT id, path FROM artifacts WHERE sha256='' ORDER BY size ASC`)
+	if err != nil {
+		return err
+	}
+	type pending struct{ id, path string }
+	var list []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.path); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, p)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	total := len(list)
+	if total == 0 {
+		return nil
+	}
+
+	var mu sync.Mutex
+	var done int
+	var hashedBytes int64
+	var lastReport time.Time
+	var firstErr error
+	report := func(force bool) {
+		if progress == nil {
+			return
+		}
+		if force || time.Since(lastReport) >= 250*time.Millisecond {
+			lastReport = time.Now()
+			progress(done, total, hashedBytes)
+		}
+	}
+
+	// GOMAXPROCS, not NumCPU: under a container CPU quota (docker --cpus),
+	// NumCPU still reports the host's full logical core count, while
+	// GOMAXPROCS is quota-aware on Linux (Go 1.25+) and tracks how many
+	// goroutines can actually run at once, the number this pool should size
+	// to, so a constrained container doesn't oversubscribe workers that just
+	// thrash for CPU time instead of running.
+	workers := runtime.GOMAXPROCS(0)
+	if workers > total {
+		workers = total
+	}
+	items := make(chan pending)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range items {
+				sha, sha1Hex, md5Hex, crc32Hex, hashErr := hashFile(ctx, item.path, func(n int64) {
+					mu.Lock()
+					hashedBytes += n
+					report(false)
+					mu.Unlock()
+				})
+				if hashErr != nil {
+					// A file removed between indexing and hashing is pruned by
+					// the next reconcile; skip it rather than aborting the pass.
+					if !errors.Is(hashErr, os.ErrNotExist) {
+						mu.Lock()
+						if firstErr == nil {
+							firstErr = hashErr
+						}
+						mu.Unlock()
+					}
+					continue
+				}
+				if _, err := s.execCtx(ctx, `UPDATE artifacts SET sha256=?,sha1=?,md5=?,crc32=? WHERE id=? AND sha256=''`, sha, sha1Hex, md5Hex, crc32Hex, item.id); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					continue
+				}
+				mu.Lock()
+				done++
+				report(true)
+				mu.Unlock()
+			}
+		}()
+	}
+feed:
+	for _, item := range list {
+		select {
+		case items <- item:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(items)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
+}
+
+// indexArtifact builds a catalog record from a file's header alone, without
+// reading the whole file. This keeps the initial library scan fast (a few
+// kilobytes per ROM) so the catalog becomes browsable immediately; the content
+// hashes are filled in afterwards by the background pass (HashPending). The
+// artifact ID is derived from the path so it is stable and available before any
+// hashing.
+func indexArtifact(path string, p Platform, st os.FileInfo) (Artifact, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Artifact{}, err
 	}
 	defer f.Close()
-	h256, h1, hm, hc := sha256.New(), sha1.New(), md5.New(), crc32.NewIEEE()
 	header := make([]byte, 0x1000)
 	n, _ := io.ReadFull(f, header)
 	header = header[:n]
-	if _, err = f.Seek(0, io.SeekStart); err != nil {
-		return Artifact{}, err
-	}
-	w := io.MultiWriter(h256, h1, hm, hc)
-	buf := make([]byte, 1024*1024)
-	for {
-		if err := ctx.Err(); err != nil {
-			return Artifact{}, err
-		}
-		n, e := f.Read(buf)
-		if n > 0 {
-			if _, err = w.Write(buf[:n]); err != nil {
-				return Artifact{}, err
-			}
-		}
-		if errors.Is(e, io.EOF) {
-			break
-		}
-		if e != nil {
-			return Artifact{}, e
-		}
-	}
-	sha := hex.EncodeToString(h256.Sum(nil))
-	idSum := sha256.Sum256([]byte(sha + "\x00" + strings.ToLower(path)))
+	idSum := sha256.Sum256([]byte("artifact\x00" + strings.ToLower(path)))
 	id := hex.EncodeToString(idSum[:12])
 	title, meta := parseHeader(p.ID, header, filepath.Base(path))
 	normalized := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))))
 	gs := sha256.Sum256([]byte(p.ID + "\x00" + normalized))
 	gid := hex.EncodeToString(gs[:12])
 	meta["title"] = title
-	return Artifact{ID: id, GameID: gid, Platform: p.ID, Name: filepath.Base(path), Path: path, Extension: strings.ToLower(filepath.Ext(path)), Size: st.Size(), SHA256: sha, SHA1: hex.EncodeToString(h1.Sum(nil)), MD5: hex.EncodeToString(hm.Sum(nil)), CRC32: hex.EncodeToString(hc.Sum(nil)), Header: meta, ModTime: st.ModTime().UnixNano()}, nil
+	return Artifact{ID: id, GameID: gid, Platform: p.ID, Name: filepath.Base(path), Path: path, Extension: strings.ToLower(filepath.Ext(path)), Size: st.Size(), Header: meta, ModTime: st.ModTime().UnixNano()}, nil
+}
+
+// hashFile computes the four content hashes for a file in a single pass. onBytes,
+// when non-nil, is called with the size of each chunk read, so a caller can
+// report progress through a multi-gigabyte file.
+func hashFile(ctx context.Context, path string, onBytes func(int64)) (sha256Hex, sha1Hex, md5Hex, crc32Hex string, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	defer f.Close()
+	h256, h1, hm, hc := sha256.New(), sha1.New(), md5.New(), crc32.NewIEEE()
+	w := io.MultiWriter(h256, h1, hm, hc)
+	buf := make([]byte, 1024*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", "", "", "", err
+		}
+		n, e := f.Read(buf)
+		if n > 0 {
+			if _, err = w.Write(buf[:n]); err != nil {
+				return "", "", "", "", err
+			}
+			if onBytes != nil {
+				onBytes(int64(n))
+			}
+		}
+		if errors.Is(e, io.EOF) {
+			break
+		}
+		if e != nil {
+			return "", "", "", "", e
+		}
+	}
+	return hex.EncodeToString(h256.Sum(nil)), hex.EncodeToString(h1.Sum(nil)), hex.EncodeToString(hm.Sum(nil)), hex.EncodeToString(hc.Sum(nil)), nil
 }
 func cleanASCII(b []byte) string {
 	b = bytesTrim(b)
@@ -555,11 +911,11 @@ func (s *Store) upsert(a Artifact) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO games(id,platform,title,region,rom_patch,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=CASE WHEN games.metadata_refreshed_at=0 THEN excluded.title ELSE games.title END,region=CASE WHEN games.region='' THEN excluded.region ELSE games.region END,rom_patch=excluded.rom_patch,updated_at=excluded.updated_at`, a.GameID, a.Platform, title, region, a.Patched, now, now)
+	_, err = s.texec(tx, `INSERT INTO games(id,platform,title,region,rom_patch,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=CASE WHEN games.metadata_refreshed_at=0 THEN excluded.title ELSE games.title END,region=CASE WHEN games.region='' THEN excluded.region ELSE games.region END,rom_patch=excluded.rom_patch,updated_at=excluded.updated_at`, a.GameID, a.Platform, title, region, a.Patched, now, now)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO artifacts(id,game_id,platform,name,path,extension,size,mod_time,sha256,sha1,md5,crc32,header_json,patched,external) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET id=excluded.id,game_id=excluded.game_id,name=excluded.name,extension=excluded.extension,size=excluded.size,mod_time=excluded.mod_time,sha256=excluded.sha256,sha1=excluded.sha1,md5=excluded.md5,crc32=excluded.crc32,header_json=excluded.header_json,patched=excluded.patched,external=excluded.external`, a.ID, a.GameID, a.Platform, a.Name, a.Path, a.Extension, a.Size, a.ModTime, a.SHA256, a.SHA1, a.MD5, a.CRC32, string(b), a.Patched, a.External)
+	_, err = s.texec(tx, `INSERT INTO artifacts(id,game_id,platform,name,path,extension,size,mod_time,sha256,sha1,md5,crc32,header_json,patched,external) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET id=excluded.id,game_id=excluded.game_id,name=excluded.name,extension=excluded.extension,size=excluded.size,mod_time=excluded.mod_time,sha256=excluded.sha256,sha1=excluded.sha1,md5=excluded.md5,crc32=excluded.crc32,header_json=excluded.header_json,patched=excluded.patched,external=excluded.external`, a.ID, a.GameID, a.Platform, a.Name, a.Path, a.Extension, a.Size, a.ModTime, a.SHA256, a.SHA1, a.MD5, a.CRC32, string(b), a.Patched, a.External)
 	if err != nil {
 		return err
 	}
@@ -587,7 +943,7 @@ func regionFromFilename(name string) string {
 	return ""
 }
 func (s *Store) Games(ctx context.Context) ([]Game, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games ORDER BY lower(title)`)
+	rows, err := s.queryCtx(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games ORDER BY lower(title)`)
 	if err != nil {
 		return nil, err
 	}
@@ -617,7 +973,7 @@ func (s *Store) Games(ctx context.Context) ([]Game, error) {
 }
 func (s *Store) Game(ctx context.Context, id string) (Game, error) {
 	var g Game
-	err := s.db.QueryRowContext(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games WHERE id=?`, id).Scan(&g.ID, &g.Platform, &g.Title, &g.Developer, &g.Publisher, &g.Description, &g.Region, &g.ReleaseDate, &g.Genre, &g.Players, &g.Rating, &g.ArtworkURL, &g.ScreenshotURL, &g.MetadataSource, &g.PatchFileID, &g.ROMPatch)
+	err := s.queryRowCtx(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games WHERE id=?`, id).Scan(&g.ID, &g.Platform, &g.Title, &g.Developer, &g.Publisher, &g.Description, &g.Region, &g.ReleaseDate, &g.Genre, &g.Players, &g.Rating, &g.ArtworkURL, &g.ScreenshotURL, &g.MetadataSource, &g.PatchFileID, &g.ROMPatch)
 	if err != nil {
 		return g, err
 	}
@@ -626,7 +982,7 @@ func (s *Store) Game(ctx context.Context, id string) (Game, error) {
 	return g, err
 }
 func (s *Store) artifacts(ctx context.Context, gid string) ([]Artifact, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,game_id,platform,name,path,extension,size,sha256,sha1,md5,crc32,header_json,mod_time,patched,external,expires_at,retain FROM artifacts WHERE game_id=? ORDER BY lower(name)`, gid)
+	rows, err := s.queryCtx(ctx, `SELECT id,game_id,platform,name,path,extension,size,sha256,sha1,md5,crc32,header_json,mod_time,patched,external,expires_at,retain FROM artifacts WHERE game_id=? ORDER BY lower(name)`, gid)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +1009,7 @@ func (s *Store) Artifact(ctx context.Context, id string) (Artifact, error) {
 	var a Artifact
 	var h string
 	var expires sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,game_id,platform,name,path,extension,size,sha256,sha1,md5,crc32,header_json,mod_time,patched,external,expires_at,retain FROM artifacts WHERE id=?`, id).Scan(&a.ID, &a.GameID, &a.Platform, &a.Name, &a.Path, &a.Extension, &a.Size, &a.SHA256, &a.SHA1, &a.MD5, &a.CRC32, &h, &a.ModTime, &a.Patched, &a.External, &expires, &a.Retain)
+	err := s.queryRowCtx(ctx, `SELECT id,game_id,platform,name,path,extension,size,sha256,sha1,md5,crc32,header_json,mod_time,patched,external,expires_at,retain FROM artifacts WHERE id=?`, id).Scan(&a.ID, &a.GameID, &a.Platform, &a.Name, &a.Path, &a.Extension, &a.Size, &a.SHA256, &a.SHA1, &a.MD5, &a.CRC32, &h, &a.ModTime, &a.Patched, &a.External, &expires, &a.Retain)
 	json.Unmarshal([]byte(h), &a.Header)
 	a.Encryption = encryptionFor(a)
 	if expires.Valid {
@@ -664,7 +1020,7 @@ func (s *Store) Artifact(ctx context.Context, id string) (Artifact, error) {
 }
 func (s *Store) ArtifactByPath(ctx context.Context, path string) (Artifact, error) {
 	var id string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM artifacts WHERE path=?`, path).Scan(&id); err != nil {
+	if err := s.queryRowCtx(ctx, `SELECT id FROM artifacts WHERE path=?`, path).Scan(&id); err != nil {
 		return Artifact{}, err
 	}
 	return s.Artifact(ctx, id)
@@ -675,7 +1031,7 @@ func (s *Store) MarkArtifactRetention(ctx context.Context, path string, retain b
 	if !retain {
 		value = expires.Unix()
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE artifacts SET retain=?,expires_at=? WHERE path=? AND (patched=TRUE OR external=TRUE)`, retain, value, path)
+	_, err := s.execCtx(ctx, `UPDATE artifacts SET retain=?,expires_at=? WHERE path=? AND (patched=TRUE OR external=TRUE)`, retain, value, path)
 	return err
 }
 func (s *Store) BeginDownload(id string) func() {
@@ -693,11 +1049,11 @@ func (s *Store) BeginDownload(id string) func() {
 }
 func (s *Store) TouchCompletedDownload(ctx context.Context, id string, retention time.Duration) error {
 	expires := s.now().Add(retention).Unix()
-	_, err := s.db.ExecContext(ctx, `UPDATE artifacts SET expires_at=? WHERE id=? AND (patched=TRUE OR external=TRUE) AND retain=FALSE`, expires, id)
+	_, err := s.execCtx(ctx, `UPDATE artifacts SET expires_at=? WHERE id=? AND (patched=TRUE OR external=TRUE) AND retain=FALSE`, expires, id)
 	return err
 }
 func (s *Store) CleanupExpired(ctx context.Context) (deleted, deferred int, failures []error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,path,game_id FROM artifacts WHERE (patched=TRUE OR external=TRUE) AND retain=FALSE AND expires_at IS NOT NULL AND expires_at<=?`, s.now().Unix())
+	rows, err := s.queryCtx(ctx, `SELECT id,path,game_id FROM artifacts WHERE (patched=TRUE OR external=TRUE) AND retain=FALSE AND expires_at IS NOT NULL AND expires_at<=?`, s.now().Unix())
 	if err != nil {
 		return 0, 0, []error{err}
 	}
@@ -729,11 +1085,11 @@ func (s *Store) CleanupExpired(ctx context.Context) (deleted, deferred int, fail
 			failures = append(failures, e)
 			continue
 		}
-		if _, e = tx.ExecContext(ctx, `DELETE FROM artifacts WHERE id=?`, c.id); e == nil {
-			_, e = tx.ExecContext(ctx, `DELETE FROM patch_jobs WHERE result_artifact_id=?`, c.id)
+		if _, e = s.texecCtx(ctx, tx, `DELETE FROM artifacts WHERE id=?`, c.id); e == nil {
+			_, e = s.texecCtx(ctx, tx, `DELETE FROM patch_jobs WHERE result_artifact_id=?`, c.id)
 		}
 		if e == nil {
-			_, e = tx.ExecContext(ctx, `DELETE FROM games WHERE NOT EXISTS(SELECT 1 FROM artifacts WHERE artifacts.game_id=games.id)`)
+			_, e = s.texecCtx(ctx, tx, `DELETE FROM games WHERE NOT EXISTS(SELECT 1 FROM artifacts WHERE artifacts.game_id=games.id)`)
 		}
 		if e != nil {
 			tx.Rollback()
@@ -758,14 +1114,14 @@ func (s *Store) SavePatchJob(ctx context.Context, j PatchJobRecord) error {
 	if j.ExpiresAt != nil {
 		expires = j.ExpiresAt.Unix()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO patch_jobs(id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,format,result_artifact_id,unverified_source,checksum_expected,checksum_actual,patch_file_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,error=excluded.error,retain=excluded.retain,expires_at=excluded.expires_at,format=excluded.format,result_artifact_id=excluded.result_artifact_id,unverified_source=excluded.unverified_source,checksum_expected=excluded.checksum_expected,checksum_actual=excluded.checksum_actual,patch_file_id=excluded.patch_file_id`, j.ID, j.Status, j.ArtifactID, j.OutputName, j.CreatedAt.Unix(), j.UpdatedAt.Unix(), j.Error, j.Retain, expires, j.Format, j.ResultArtifactID, j.UnverifiedSource, j.ChecksumExpected, j.ChecksumActual, j.PatchFileID)
+	_, err := s.execCtx(ctx, `INSERT INTO patch_jobs(id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,format,result_artifact_id,unverified_source,checksum_expected,checksum_actual,patch_file_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,error=excluded.error,retain=excluded.retain,expires_at=excluded.expires_at,format=excluded.format,result_artifact_id=excluded.result_artifact_id,unverified_source=excluded.unverified_source,checksum_expected=excluded.checksum_expected,checksum_actual=excluded.checksum_actual,patch_file_id=excluded.patch_file_id`, j.ID, j.Status, j.ArtifactID, j.OutputName, j.CreatedAt.Unix(), j.UpdatedAt.Unix(), j.Error, j.Retain, expires, j.Format, j.ResultArtifactID, j.UnverifiedSource, j.ChecksumExpected, j.ChecksumActual, j.PatchFileID)
 	return err
 }
 func (s *Store) PatchJob(ctx context.Context, id string) (PatchJobRecord, error) {
 	var j PatchJobRecord
 	var created, updated int64
 	var expires sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,format,result_artifact_id,unverified_source,checksum_expected,checksum_actual,patch_file_id FROM patch_jobs WHERE id=?`, id).Scan(&j.ID, &j.Status, &j.ArtifactID, &j.OutputName, &created, &updated, &j.Error, &j.Retain, &expires, &j.Format, &j.ResultArtifactID, &j.UnverifiedSource, &j.ChecksumExpected, &j.ChecksumActual, &j.PatchFileID)
+	err := s.queryRowCtx(ctx, `SELECT id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,format,result_artifact_id,unverified_source,checksum_expected,checksum_actual,patch_file_id FROM patch_jobs WHERE id=?`, id).Scan(&j.ID, &j.Status, &j.ArtifactID, &j.OutputName, &created, &updated, &j.Error, &j.Retain, &expires, &j.Format, &j.ResultArtifactID, &j.UnverifiedSource, &j.ChecksumExpected, &j.ChecksumActual, &j.PatchFileID)
 	j.CreatedAt = time.Unix(created, 0)
 	j.UpdatedAt = time.Unix(updated, 0)
 	if expires.Valid {
@@ -781,10 +1137,10 @@ func (s *Store) ReplacePatchRecipes(ctx context.Context, recipes []PatchRecipe) 
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM patch_files`); err != nil {
+	if _, err = s.texecCtx(ctx, tx, `DELETE FROM patch_files`); err != nil {
 		return err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO patch_files(id,path,size,sha256,extension,mod_time,platform,slug,title,output_filename,base_sha256,base_crc32,validation_type,validation_value) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	stmt, err := s.tprepareCtx(ctx, tx, `INSERT INTO patch_files(id,path,size,sha256,extension,mod_time,platform,slug,title,output_filename,base_sha256,base_crc32,validation_type,validation_value) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -797,7 +1153,7 @@ func (s *Store) ReplacePatchRecipes(ctx context.Context, recipes []PatchRecipe) 
 	return tx.Commit()
 }
 func (s *Store) PatchRecipes(ctx context.Context) ([]PatchRecipe, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,platform,slug,title,path,sha256,extension,output_filename,base_sha256,base_crc32,validation_type,validation_value,size,mod_time FROM patch_files ORDER BY platform,lower(title),id`)
+	rows, err := s.queryCtx(ctx, `SELECT id,platform,slug,title,path,sha256,extension,output_filename,base_sha256,base_crc32,validation_type,validation_value,size,mod_time FROM patch_files ORDER BY platform,lower(title),id`)
 	if err != nil {
 		return nil, err
 	}
@@ -814,15 +1170,15 @@ func (s *Store) PatchRecipes(ctx context.Context) ([]PatchRecipe, error) {
 }
 func (s *Store) PatchRecipe(ctx context.Context, id string) (PatchRecipe, error) {
 	var r PatchRecipe
-	err := s.db.QueryRowContext(ctx, `SELECT id,platform,slug,title,path,sha256,extension,output_filename,base_sha256,base_crc32,validation_type,validation_value,size,mod_time FROM patch_files WHERE id=?`, id).Scan(&r.ID, &r.Platform, &r.Slug, &r.Title, &r.Path, &r.SHA256, &r.Extension, &r.OutputFilename, &r.BaseSHA256, &r.BaseCRC32, &r.ValidationType, &r.ValidationValue, &r.Size, &r.ModTime)
+	err := s.queryRowCtx(ctx, `SELECT id,platform,slug,title,path,sha256,extension,output_filename,base_sha256,base_crc32,validation_type,validation_value,size,mod_time FROM patch_files WHERE id=?`, id).Scan(&r.ID, &r.Platform, &r.Slug, &r.Title, &r.Path, &r.SHA256, &r.Extension, &r.OutputFilename, &r.BaseSHA256, &r.BaseCRC32, &r.ValidationType, &r.ValidationValue, &r.Size, &r.ModTime)
 	return r, err
 }
 func (s *Store) LinkPatchedGameRecipe(ctx context.Context, gameID, patchID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE games SET patch_file_id=? WHERE id=? AND rom_patch=TRUE`, patchID, gameID)
+	_, err := s.execCtx(ctx, `UPDATE games SET patch_file_id=? WHERE id=? AND rom_patch=TRUE`, patchID, gameID)
 	return err
 }
 func (s *Store) DeletePatchJob(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM patch_jobs WHERE id=?`, id)
+	_, err := s.execCtx(ctx, `DELETE FROM patch_jobs WHERE id=?`, id)
 	return err
 }
 
@@ -871,7 +1227,7 @@ func (s *Store) IGDBCandidates(ctx context.Context, staleBefore time.Time) ([]Ga
 	return s.metadataCandidates(ctx, `rom_patch=FALSE AND metadata_source NOT LIKE 'manual%' AND (description='' OR metadata_refreshed_at<?)`, staleBefore.Unix())
 }
 func (s *Store) metadataCandidates(ctx context.Context, where string, args ...any) ([]Game, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games WHERE `+where+` ORDER BY metadata_refreshed_at`, args...)
+	rows, err := s.queryCtx(ctx, `SELECT id,platform,title,developer,publisher,description,region,release_date,genre,players,rating,artwork_url,screenshot_url,metadata_source,patch_file_id,rom_patch FROM games WHERE `+where+` ORDER BY metadata_refreshed_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -901,14 +1257,14 @@ func (s *Store) metadataCandidates(ctx context.Context, where string, args ...an
 // UpdateGameMetadata is guarded again in SQL: even a compromised or stale
 // provider queue cannot write remote metadata onto a patched game.
 func (s *Store) UpdateGameMetadata(ctx context.Context, g Game, refreshed time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE games SET title=CASE WHEN ?='' THEN title ELSE ? END,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,players=?,rating=?,artwork_url=?,screenshot_url=?,metadata_source=?,metadata_refreshed_at=? WHERE id=? AND rom_patch=FALSE AND metadata_source NOT LIKE 'manual%'`, g.Title, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.Players, g.Rating, g.ArtworkURL, g.ScreenshotURL, g.MetadataSource, refreshed.Unix(), g.ID)
+	_, err := s.execCtx(ctx, `UPDATE games SET title=CASE WHEN ?='' THEN title ELSE ? END,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,players=?,rating=?,artwork_url=?,screenshot_url=?,metadata_source=?,metadata_refreshed_at=? WHERE id=? AND rom_patch=FALSE AND metadata_source NOT LIKE 'manual%'`, g.Title, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.Players, g.Rating, g.ArtworkURL, g.ScreenshotURL, g.MetadataSource, refreshed.Unix(), g.ID)
 	return err
 }
 
 // UpdateManualGameMetadata applies an operator-owned override to any catalog
 // game. Provider candidate queries and writes explicitly exclude these rows.
 func (s *Store) UpdateManualGameMetadata(ctx context.Context, g Game, refreshed time.Time) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE games SET title=?,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,players=?,rating=?,artwork_url=?,metadata_source='manual',metadata_refreshed_at=?,updated_at=? WHERE id=?`, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.Players, g.Rating, g.ArtworkURL, refreshed.Unix(), refreshed.Unix(), g.ID)
+	result, err := s.execCtx(ctx, `UPDATE games SET title=?,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,players=?,rating=?,artwork_url=?,metadata_source='manual',metadata_refreshed_at=?,updated_at=? WHERE id=?`, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.Players, g.Rating, g.ArtworkURL, refreshed.Unix(), refreshed.Unix(), g.ID)
 	if err != nil {
 		return err
 	}
@@ -922,12 +1278,12 @@ func (s *Store) UpdateManualGameMetadata(ctx context.Context, g Game, refreshed 
 // UpdatePatchedGameMetadata is intentionally separate from provider writes.
 // Its SQL guard prevents manual data from being attached to an unpatched game.
 func (s *Store) UpdatePatchedGameMetadata(ctx context.Context, g Game, refreshed time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE games SET title=CASE WHEN ?='' THEN title ELSE ? END,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,artwork_url=?,metadata_source='manual',metadata_refreshed_at=? WHERE id=? AND rom_patch=TRUE`, g.Title, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.ArtworkURL, refreshed.Unix(), g.ID)
+	_, err := s.execCtx(ctx, `UPDATE games SET title=CASE WHEN ?='' THEN title ELSE ? END,developer=?,publisher=?,description=?,region=?,release_date=?,genre=?,artwork_url=?,metadata_source='manual',metadata_refreshed_at=? WHERE id=? AND rom_patch=TRUE`, g.Title, g.Title, g.Developer, g.Publisher, g.Description, g.Region, g.ReleaseDate, g.Genre, g.ArtworkURL, refreshed.Unix(), g.ID)
 	return err
 }
 
 func (s *Store) MarkMetadataChecked(ctx context.Context, id string, refreshed time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE games SET metadata_refreshed_at=? WHERE id=? AND rom_patch=FALSE`, refreshed.Unix(), id)
+	_, err := s.execCtx(ctx, `UPDATE games SET metadata_refreshed_at=? WHERE id=? AND rom_patch=FALSE`, refreshed.Unix(), id)
 	return err
 }
 
@@ -939,10 +1295,10 @@ func (s *Store) ReplaceLibretroPlatform(ctx context.Context, platform string, re
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM libretro_entries WHERE platform=?`, platform); err != nil {
+	if _, err = s.texecCtx(ctx, tx, `DELETE FROM libretro_entries WHERE platform=?`, platform); err != nil {
 		return err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO libretro_entries(platform,name,description,region,developer,publisher,genre,release_date,players,rating,crc32,md5,sha1) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	stmt, err := s.tprepareCtx(ctx, tx, `INSERT INTO libretro_entries(platform,name,description,region,developer,publisher,genre,release_date,players,rating,crc32,md5,sha1) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -964,7 +1320,7 @@ func (s *Store) MatchLibretro(ctx context.Context, a Artifact) (MetadataRecord, 
 		if q.value == "" {
 			continue
 		}
-		err := s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM libretro_entries WHERE platform=? AND `+q.field+`=? LIMIT 1`, a.Platform, strings.ToLower(q.value)).Scan(&r.Name, &r.Description, &r.Region, &r.Developer, &r.Publisher, &r.Genre, &r.ReleaseDate, &r.Players, &r.Rating, &r.CRC32, &r.MD5, &r.SHA1)
+		err := s.queryRowCtx(ctx, `SELECT `+columns+` FROM libretro_entries WHERE platform=? AND `+q.field+`=? LIMIT 1`, a.Platform, strings.ToLower(q.value)).Scan(&r.Name, &r.Description, &r.Region, &r.Developer, &r.Publisher, &r.Genre, &r.ReleaseDate, &r.Players, &r.Rating, &r.CRC32, &r.MD5, &r.SHA1)
 		if err == nil {
 			return r, nil
 		}
@@ -992,7 +1348,7 @@ func (s *Store) MatchLibretroName(ctx context.Context, platform string, names ..
 			continue
 		}
 		seen[key] = true
-		err := s.db.QueryRowContext(ctx, `SELECT `+columns+` FROM libretro_entries WHERE platform=? AND lower(name)=lower(?) LIMIT 1`, platform, name).Scan(&r.Name, &r.Description, &r.Region, &r.Developer, &r.Publisher, &r.Genre, &r.ReleaseDate, &r.Players, &r.Rating, &r.CRC32, &r.MD5, &r.SHA1)
+		err := s.queryRowCtx(ctx, `SELECT `+columns+` FROM libretro_entries WHERE platform=? AND lower(name)=lower(?) LIMIT 1`, platform, name).Scan(&r.Name, &r.Description, &r.Region, &r.Developer, &r.Publisher, &r.Genre, &r.ReleaseDate, &r.Players, &r.Rating, &r.CRC32, &r.MD5, &r.SHA1)
 		if err == nil {
 			return r, nil
 		}
@@ -1006,10 +1362,10 @@ func (s *Store) MatchLibretroName(ctx context.Context, platform string, names ..
 func (s *Store) SchedulerState(ctx context.Context, name string) (time.Time, string, error) {
 	var unix int64
 	var status string
-	err := s.db.QueryRowContext(ctx, `SELECT last_run,status FROM scheduler_state WHERE name=?`, name).Scan(&unix, &status)
+	err := s.queryRowCtx(ctx, `SELECT last_run,status FROM scheduler_state WHERE name=?`, name).Scan(&unix, &status)
 	return time.Unix(unix, 0), status, err
 }
 func (s *Store) SetSchedulerState(ctx context.Context, name string, when time.Time, status string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO scheduler_state(name,last_run,status) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET last_run=excluded.last_run,status=excluded.status`, name, when.Unix(), status)
+	_, err := s.execCtx(ctx, `INSERT INTO scheduler_state(name,last_run,status) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET last_run=excluded.last_run,status=excluded.status`, name, when.Unix(), status)
 	return err
 }

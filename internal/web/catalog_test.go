@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/dop251/goja"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -21,15 +22,6 @@ import (
 	"testing"
 	"time"
 )
-
-func TestEmbeddedFrontendScriptsCompile(t *testing.T) {
-	adminRendered := strings.Replace(adminJSScript, `badge=(text,kind='')=>'<span class="badge '+kind+'">'+esc(text)+'</span>'`, adminBadgeRenderer, 1)
-	for name, script := range map[string]string{"admin": adminRendered, "catalog": catalogJSScript} {
-		if _, err := goja.Compile(name+".js", script, false); err != nil {
-			t.Errorf("%s JavaScript does not compile: %v", name, err)
-		}
-	}
-}
 
 func TestSearchFoldIgnoresAccents(t *testing.T) {
 	if !strings.Contains(searchFold("Pokémon Mystery Dungeon"), searchFold("Pokemon")) {
@@ -59,7 +51,7 @@ func TestPublicPatchWorkspaceRequiresOwnROMAndForcesExpiry(t *testing.T) {
 	}
 	html, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if !strings.Contains(string(html), "Base ROM") || !strings.Contains(string(html), "Temporary workshop") || !strings.Contains(string(html), "Cover / icon artwork") || !strings.Contains(string(html), "Description") {
+	if !strings.Contains(string(html), "Clean base ROM") || !strings.Contains(string(html), "From your library") || !strings.Contains(string(html), "Temporary workshop") || !strings.Contains(string(html), "Cover / icon artwork") || !strings.Contains(string(html), "Description") {
 		t.Fatalf("public patch help missing: %s", html)
 	}
 	var csrfCookie *http.Cookie
@@ -119,6 +111,107 @@ func TestPublicPatchWorkspaceRequiresOwnROMAndForcesExpiry(t *testing.T) {
 	}
 }
 
+// TestPublicPatchJobAcceptsCatalogArtifactID pins the Flow Audit fix: the
+// public ROM Patcher must be able to patch a copy of a ROM already in the
+// library by artifact_id, not only a freshly uploaded one, and the library
+// file itself must survive the job untouched.
+func TestPublicPatchJobAcceptsCatalogArtifactID(t *testing.T) {
+	d := t.TempDir()
+	root := filepath.Join(d, "platforms")
+	output := filepath.Join(d, "patched")
+	os.MkdirAll(filepath.Join(root, "gba"), 0755)
+	rom := make([]byte, 0x400)
+	copy(rom[0xa0:], "LIBRARY GAME")
+	romPath := filepath.Join(root, "gba", "library.gba")
+	if err := os.WriteFile(romPath, rom, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := catalog.Open(filepath.Join(d, "db.sqlite"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.AddArtifactRoot(output)
+	games, _ := s.Games(context.Background())
+	artifactID := games[0].Artifacts[0].ID
+
+	m := patcher.NewManager(s, patcher.ManagerConfig{LibraryDirectory: root, OutputDirectory: output, MaxROMBytes: 1 << 20, MaxPatchBytes: 1 << 20, Retention: time.Hour, Timeout: time.Second})
+	defer m.Shutdown()
+	ui := NewCatalog(s, "http://example", "", "default", "admin-token-with-24-characters!", filepath.Join(d, "patches"), time.Hour)
+	ui.SetPatchManager(m)
+	ts := httptest.NewServer(ui.Handler())
+	defer ts.Close()
+
+	page, err := http.Get(ts.URL + "/patches")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	var csrfCookie *http.Cookie
+	for _, c := range page.Cookies() {
+		if c.Name == "romrelay_patch_csrf" {
+			csrfCookie = c
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("public CSRF cookie missing")
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("artifact_id", artifactID)
+	patchPart, _ := mw.CreateFormFile("patch", "mine.ips")
+	_, _ = patchPart.Write([]byte{'P', 'A', 'T', 'C', 'H', 0, 0, 1, 0, 1, 'X', 'E', 'O', 'F'})
+	_ = mw.WriteField("output_filename", "web-public-from-library.gba")
+	_ = mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/patch-jobs", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	req.AddCookie(csrfCookie)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("status=%d %s", res.StatusCode, b)
+	}
+	var job patcher.Job
+	if err = json.NewDecoder(res.Body).Decode(&job); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for job.Status == "queued" || job.Status == "running" {
+		if time.Now().After(deadline) {
+			t.Fatal("job timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+		r, er := http.Get(ts.URL + "/api/patch-jobs/" + job.ID)
+		if er != nil {
+			t.Fatal(er)
+		}
+		er = json.NewDecoder(r.Body).Decode(&job)
+		r.Body.Close()
+		if er != nil {
+			t.Fatal(er)
+		}
+	}
+	if job.Status != "completed" {
+		t.Fatalf("job=%+v", job)
+	}
+	got, err := os.ReadFile(romPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, rom) {
+		t.Fatal("the library artifact must be copied, never modified, by a patch job that picked it")
+	}
+}
+
 func TestMissingLocalSearchOffersAdminRemoteAction(t *testing.T) {
 	d := t.TempDir()
 	s, err := catalog.Open(filepath.Join(d, "db.sqlite"), filepath.Join(d, "platforms"))
@@ -169,8 +262,18 @@ func TestCatalogShowsFallbackArtAndBackgroundHealth(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if !strings.Contains(string(body), "cover-placeholder") || !strings.Contains(string(body), "/assets/catalog.js") {
-		t.Fatalf("catalog missing fallback/status UI: %s", body)
+	// A game with no artwork still needs something in its card, and the page must
+	// load the script that reports background work through the top-nav activity
+	// icon (base.html, every page). Asserted by role and asset rather than by
+	// class name, so restyling the card does not fail this test.
+	if !strings.Contains(string(body), `id="activity-widget"`) {
+		t.Fatalf("catalog is missing the activity-widget region: %s", body)
+	}
+	if !strings.Contains(string(body), `src="/assets/app.js"`) {
+		t.Fatalf("catalog does not load the script that fills it: %s", body)
+	}
+	if !strings.Contains(string(body), "<svg") {
+		t.Fatalf("a game without cover art must still show placeholder art: %s", body)
 	}
 	res, err = http.Get(ts.URL + "/healthz")
 	if err != nil {
@@ -240,17 +343,34 @@ func TestCatalogRoutesAndSeparateAdminToken(t *testing.T) {
 		t.Fatalf("public status %d", res.StatusCode)
 	}
 	res.Body.Close()
+	// The viewer token authenticates downloads, not people. A browser carrying it
+	// is still an anonymous visitor and must sign in: the token travels in QR
+	// codes, link hrefs, and browser history, so treating it as a login let anyone
+	// holding a copied URL walk past the sign-in page.
 	res, _ = http.Get(ts.URL + "/?token=" + viewer)
-	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != 200 || !strings.Contains(string(body), "ROM Relay") {
-		t.Fatalf("catalog %d %s", res.StatusCode, body)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the viewer token must not open a human page: got %d", res.StatusCode)
 	}
+	req0, _ := http.NewRequest(http.MethodGet, ts.URL+"/?token="+viewer, nil)
+	req0.Header.Set("Accept", "text/html")
+	browser := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err = browser.Do(req0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther || !strings.HasPrefix(res.Header.Get("Location"), "/login") {
+		t.Fatalf("a browser with only a viewer token belongs at the login page: got %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+
+	// The handheld routes are exactly what the token is for: a 3DS scans a QR and
+	// fetches the CIA, and it can hold no session to do it with.
 	id := games[0].Artifacts[0].ID
-	for _, path := range []string{"/d/" + id + "?token=" + viewer, "/qr/" + id + ".png?token=" + viewer, "/api/games?token=" + viewer} {
+	for _, path := range []string{"/d/" + id + "?token=" + viewer, "/healthz?token=" + viewer} {
 		res, _ = http.Get(ts.URL + path)
 		if res.StatusCode != 200 {
-			t.Errorf("%s: %d", path, res.StatusCode)
+			t.Errorf("%s: the viewer token must still work for handheld downloads: %d", path, res.StatusCode)
 		}
 		res.Body.Close()
 	}
@@ -339,6 +459,46 @@ func TestEncryptedDownloadPromptsAndKeepsMutationAdminOnly(t *testing.T) {
 	}
 	res.Body.Close()
 }
+
+// The sign-in page is reachable by definition, so the CSS and JS it asks for must
+// be too. With a viewer token configured they were not: the browser was refused
+// app.css with a 401 and rendered the sign-in and change-password screens with no
+// styling at all, which reads as a broken, undesigned page, not as an auth rule.
+func TestTheSignInPageCanLoadItsOwnStylesheetAndScript(t *testing.T) {
+	d := t.TempDir()
+	s, err := catalog.Open(filepath.Join(d, "db.sqlite"), filepath.Join(d, "platforms"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// A viewer token configured is the case that broke: without one the LAN is
+	// treated as trusted and everything is open anyway.
+	ui := NewCatalog(s, "http://example", "viewer-token-with-24-characters", "default", "admin-token-with-24-characters!", filepath.Join(d, "patches"), time.Hour)
+	ts := httptest.NewServer(ui.Handler())
+	defer ts.Close()
+
+	page, err := http.Get(ts.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+
+	for _, asset := range []string{"/assets/app.css", "/assets/app.js"} {
+		if !strings.Contains(string(body), `"`+asset+`"`) {
+			t.Fatalf("the sign-in page no longer asks for %s", asset)
+		}
+		res, err := http.Get(ts.URL + asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("an anonymous visitor must be able to load %s, or the sign-in page renders unstyled: got %d", asset, res.StatusCode)
+		}
+	}
+}
+
 func TestSplitFBIBatches(t *testing.T) {
 	b := splitFBI([]string{"12345", "67890", "abcde"}, 12)
 	if len(b) != 2 || len(b[0]) != 2 || len(b[1]) != 1 {
@@ -346,22 +506,67 @@ func TestSplitFBIBatches(t *testing.T) {
 	}
 }
 
-func TestSplitFBICameraSafeBatches(t *testing.T) {
-	urls := []string{
-		"http://192.168.1.43:8080/d/111111111111111111111111",
-		"http://192.168.1.43:8080/d/222222222222222222222222",
-		"http://192.168.1.43:8080/d/333333333333333333333333",
-		"http://192.168.1.43:8080/d/444444444444444444444444",
-		"http://192.168.1.43:8080/d/555555555555555555555555",
+// FBI installs every URL in a QR (it splits the payload on newlines), so a batch
+// is meant to be a batch. The budget used to be 180 bytes, under three of these
+// URLs, which made "batch QR" one code per ROM.
+func fbiTestURLs(n int) []string {
+	urls := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		urls = append(urls, fmt.Sprintf("http://192.168.1.43:8080/d/%024d?token=VVdAiPCeYTrzve0tZ9LomBYRvCRvV9QK", i))
 	}
-	batches := splitFBI(urls, fbiQRPayloadMax)
+	return urls
+}
+
+func TestOneFBIQRCarriesAWholeBatchOfROMs(t *testing.T) {
+	batches := splitFBI(fbiTestURLs(5), fbiQRPayloadMax)
+	if len(batches) != 1 {
+		t.Fatalf("five ROMs must fit one scannable QR, not %d: %#v", len(batches), batches)
+	}
+	if len(batches[0]) != 5 {
+		t.Fatalf("all five URLs belong in the one batch: %#v", batches[0])
+	}
+}
+
+// FBI prefixes http:// to any line without a scheme, so sending it is seven
+// wasted characters per URL, most of another ROM per code.
+func TestFBIPayloadDropsTheSchemeFBIAddsBack(t *testing.T) {
+	batches := splitFBI(fbiTestURLs(1), fbiQRPayloadMax)
+	got := batches[0][0]
+	if strings.HasPrefix(got, "http://") {
+		t.Errorf("the scheme FBI re-adds must not be spent on QR capacity: %q", got)
+	}
+	if !strings.HasPrefix(got, "192.168.1.43:8080/d/") {
+		t.Errorf("the rest of the URL must survive intact: %q", got)
+	}
+	// An https relay keeps its scheme: FBI would otherwise downgrade the request.
+	secure := splitFBI([]string{"https://relay.example/d/abc"}, fbiQRPayloadMax)
+	if secure[0][0] != "https://relay.example/d/abc" {
+		t.Errorf("https must be preserved, or FBI silently fetches over http: %q", secure[0][0])
+	}
+}
+
+func TestFBIBatchesStayScannableAndWithinFBIsLimits(t *testing.T) {
+	batches := splitFBI(fbiTestURLs(400), fbiQRPayloadMax)
 	if len(batches) < 2 {
-		t.Fatalf("dense FBI payload was not split: %#v", batches)
+		t.Fatal("400 ROMs cannot be one QR; the payload must split")
 	}
-	for _, batch := range batches {
+	for i, batch := range batches {
 		if size := len(strings.Join(batch, "\n")) + 1; size > fbiQRPayloadMax && len(batch) > 1 {
-			t.Fatalf("batch payload %d exceeds camera-safe limit", size)
+			t.Fatalf("batch %d payload %d exceeds the camera-safe limit", i, size)
 		}
+		// FBI stores at most INSTALL_URLS_MAX = 128 URLs and drops the rest, so a
+		// batch that exceeded it would silently not install everything it showed.
+		if len(batch) > fbiURLsPerQR {
+			t.Fatalf("batch %d holds %d URLs; FBI installs only %d", i, len(batch), fbiURLsPerQR)
+		}
+	}
+	// Every URL must survive the split: a dropped one is a ROM that never installs.
+	total := 0
+	for _, batch := range batches {
+		total += len(batch)
+	}
+	if total != 400 {
+		t.Fatalf("batching lost URLs: got %d want 400", total)
 	}
 }
 
@@ -398,23 +603,48 @@ func Test3DSEncryptionUIFilter(t *testing.T) {
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 	text := string(body)
-	if !strings.Contains(text, "Unencrypted CIA") || !strings.Contains(text, "<h2>unencrypted</h2>") {
-		t.Fatalf("unexpected filtered page: %s", text)
+	// The fixture names its games "encrypted" and "unencrypted", and one contains
+	// the other, so the card title is matched with its tag to stay unambiguous.
+	// The 3DS format facet is no longer offered as a sidebar control (Platform is
+	// the only filter shown); the ?encryption= query itself still works for links
+	// like the FBI batch flow, so filtering behavior is what this checks now.
+	if !strings.Contains(text, ">unencrypted</strong>") {
+		t.Fatalf("the unencrypted game is missing from its own filter: %s", text)
 	}
-	if !strings.Contains(text, "<svg") || !strings.Contains(text, "aria-hidden=true") {
-		t.Fatal("encryption state is missing its accessible visual icon")
-	}
-	if strings.Contains(text, "<h2>encrypted</h2>") {
+	if strings.Contains(text, ">encrypted</strong>") {
 		t.Fatal("encrypted-only game leaked into filter")
 	}
-	js, err := http.Get(ts.URL + "/assets/catalog.js")
+	if !strings.Contains(text, "<svg") || !strings.Contains(text, `aria-hidden="true"`) {
+		t.Fatal("encryption state is missing its accessible visual icon")
+	}
+	// The FBI batch modal is part of the 3DS view: markup that app.js fills once
+	// it knows which CIAs are installable. The console-versus-emulator guidance
+	// lives with the files themselves, on the game view.
+	if !strings.Contains(text, "3DS Batch Installer") || !strings.Contains(text, "data-fbi") {
+		t.Fatal("the 3DS view is missing the FBI batch modal")
+	}
+	gamesForGuide, _ := s.Games(context.Background())
+	var mixedID string
+	for _, game := range gamesForGuide {
+		for _, artifact := range game.Artifacts {
+			if artifact.Encryption == "encrypted" {
+				mixedID = game.ID
+			}
+		}
+	}
+	gameRes, err := http.Get(ts.URL + "/games/" + mixedID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	jsBody, _ := io.ReadAll(js.Body)
-	js.Body.Close()
-	if !strings.Contains(string(jsBody), "Batch install selected CIAs") || !strings.Contains(string(jsBody), "Unencrypted / decrypted CIA") || !strings.Contains(string(jsBody), "artifact_ids") {
-		t.Fatal("catalog script is missing FBI selection or encryption guidance")
+	gameBody, _ := io.ReadAll(gameRes.Body)
+	gameRes.Body.Close()
+	if !strings.Contains(string(gameBody), "Console · FBI install") {
+		t.Fatal("the game view does not explain which CIA format installs on a console")
+	}
+	script := httptest.NewRecorder()
+	ui.Handler().ServeHTTP(script, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if !strings.Contains(script.Body.String(), "artifact_ids") {
+		t.Fatal("the bundled script no longer queues a selection to FBI")
 	}
 	games, _ := s.Games(context.Background())
 	var ids []string
@@ -516,14 +746,21 @@ func TestAdminCanEditAndLockGameMetadata(t *testing.T) {
 	if got.Title != "Better Title" || got.Description != "A manually corrected synopsis." || got.MetadataSource != "manual" {
 		t.Fatalf("metadata not saved: %#v", got)
 	}
-	js, err := http.Get(ts.URL + "/assets/admin.js?admin_token=" + admin)
+	// The editor itself is markup on the admin page now, wired by the bundle, so
+	// what matters is that the page still offers the form the API above serves.
+	// The token in the query is exchanged for a cookie by a redirect, so this needs
+	// a jar to arrive authenticated.
+	jar, _ := cookiejar.New(nil)
+	page, err := (&http.Client{Jar: jar}).Get(ts.URL + "/admin/patches?admin_token=" + url.QueryEscape(admin))
 	if err != nil {
 		t.Fatal(err)
 	}
-	jsBody, _ := io.ReadAll(js.Body)
-	js.Body.Close()
-	if !strings.Contains(string(jsBody), "metadata-form") || !strings.Contains(string(jsBody), "manual override") || !strings.Contains(string(jsBody), "Patched") || !strings.Contains(string(jsBody), `<svg class="icon"`) {
-		t.Fatal("admin metadata editor missing from UI script")
+	pageBody, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+	for _, required := range []string{`id="metadata-form"`, `name="game_id"`, `name="remove_cover"`, "Save manual metadata"} {
+		if !strings.Contains(string(pageBody), required) {
+			t.Errorf("admin metadata editor missing %q", required)
+		}
 	}
 }
 
@@ -536,7 +773,7 @@ func TestHumanBytes(t *testing.T) {
 }
 
 func TestWebThemeCopyAndAdminTheme(t *testing.T) {
-	for _, tc := range []struct{ theme, want, not string }{{"default", "Your ROMs. Your network. Your relay.", "Corn Mode"}, {"corn", "ROM Relay · Corn Mode", "Your ROMs. Your network. Your relay."}} {
+	for _, tc := range []struct{ theme, want, not string }{{"default", "No matching ROMs. Catalog reconciliation may still be running.", "No matching ears in the crib"}, {"corn", "ROM Relay · Corn Mode", "No matching ROMs. Catalog reconciliation may still be running."}} {
 		d := t.TempDir()
 		s, err := catalog.Open(filepath.Join(d, "db.sqlite"), filepath.Join(d, "platforms"))
 		if err != nil {
@@ -577,10 +814,28 @@ func TestWebThemeCopyAndAdminTheme(t *testing.T) {
 		if tc.theme == "default" && !strings.Contains(string(body), "Patch workspace") {
 			t.Errorf("default admin not themed: %s", body)
 		}
-		for _, required := range []string{"Create a patched ROM", "Edit game metadata and artwork", "Cover / icon artwork", "Catalog game / file", "Server control"} {
+		for _, required := range []string{"Create a patched ROM", "Edit game metadata and artwork", "Cover / icon artwork", "Catalog game / file"} {
 			if !strings.Contains(string(body), required) {
 				t.Errorf("admin management UI missing %q", required)
 			}
+		}
+		// Server control moved to the /admin hub, it must not still be on the
+		// Patch Workspace page, and it must be on the hub.
+		if strings.Contains(string(body), "Server control") {
+			t.Error("Patch Workspace still has Server control; it belongs on the /admin hub")
+		}
+		req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin", nil)
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		res, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hubBody, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if !strings.Contains(string(hubBody), "Server control") || !strings.Contains(string(hubBody), `action="/api/admin/shutdown"`) {
+			t.Errorf("admin hub missing Server control shutdown form: %s", hubBody)
 		}
 		ts.Close()
 		s.Close()
@@ -745,9 +1000,13 @@ func TestCatalogHidesPatchedGamesOnlyOnMainLander(t *testing.T) {
 	}
 	ui := NewCatalog(s, "http://example", "", "default", "", filepath.Join(d, "patches"), time.Hour)
 	for path, expected := range map[string][2]string{
+		// A temporary patched build (never retained) stays out of the library
+		// until its Status chip, a legacy ?platform=patched link, or its exact
+		// name asks for it by name; a bare platform filter is not enough.
 		"/":                  {"BASE GAME", "PATCHED GAME"},
-		"/?platform=gba":     {"PATCHED GAME", ""},
+		"/?platform=gba":     {"BASE GAME", "PATCHED GAME"},
 		"/?platform=patched": {"PATCHED GAME", "BASE GAME"},
+		"/?q=PATCHED+GAME":   {"PATCHED GAME", ""},
 	} {
 		want, unwanted := expected[0], expected[1]
 		res := httptest.NewRecorder()
@@ -757,10 +1016,12 @@ func TestCatalogHidesPatchedGamesOnlyOnMainLander(t *testing.T) {
 			t.Errorf("%s filtering mismatch: %s", path, body)
 		}
 	}
-	js := httptest.NewRecorder()
-	ui.Handler().ServeHTTP(js, httptest.NewRequest(http.MethodGet, "/assets/catalog.js", nil))
-	if !strings.Contains(js.Body.String(), "platform=patched") || !strings.Contains(js.Body.String(), "Patched") {
-		t.Fatal("catalog script does not expose the Patched platform")
+	// The Patched control is a server-rendered facet now, not something a script
+	// injects: it must appear in the HTML of a view where patched builds exist.
+	facet := httptest.NewRecorder()
+	ui.Handler().ServeHTTP(facet, httptest.NewRequest(http.MethodGet, "/?platform=gba", nil))
+	if !strings.Contains(facet.Body.String(), `value="patched"`) || !strings.Contains(facet.Body.String(), "Patched") {
+		t.Fatal("the catalog does not offer the Patched status filter")
 	}
 }
 
@@ -807,4 +1068,52 @@ func TestAdminCanQueue3DSToCIAConversion(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("conversion callback was not invoked")
 	}
+}
+
+// The catalog's stylesheet is an external file, so the policy must allow
+// same-origin styles. It did not when the pages were converted: every style used
+// to be inline, style-src was 'unsafe-inline' alone, and the browser silently
+// refused app.css, the page rendered completely unstyled while every text
+// assertion still passed.
+func TestTheContentSecurityPolicyAllowsThePagesOwnAssets(t *testing.T) {
+	d := t.TempDir()
+	s, err := catalog.Open(filepath.Join(d, "db.sqlite"), filepath.Join(d, "platforms"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ui := NewCatalog(s, "http://example", "", "default", "admin-token-with-24-characters!", filepath.Join(d, "patches"), time.Hour)
+	res := httptest.NewRecorder()
+	ui.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := res.Body.String()
+	policy := res.Header().Get("Content-Security-Policy")
+	for _, directive := range []struct{ name, needle string }{
+		{"style-src", `<link rel="stylesheet" href="/assets/app.css">`},
+		{"script-src", `<script defer src="/assets/app.js"></script>`},
+	} {
+		if !strings.Contains(body, directive.needle) {
+			t.Fatalf("the page no longer loads its own asset: %s", directive.needle)
+		}
+		section, _, _ := strings.Cut(policyDirective(policy, directive.name), ";")
+		if !strings.Contains(section, "'self'") {
+			t.Errorf("%s must allow 'self' or the browser refuses the asset the page just requested: %q", directive.name, policy)
+		}
+		// Now that no page carries inline <style> or <script>, the exemption that
+		// made XSS exploitable must not creep back in with a "temporary" inline bit.
+		if strings.Contains(section, "'unsafe-inline'") {
+			t.Errorf("%s must not allow 'unsafe-inline': every page loads its assets same-origin now: %q", directive.name, policy)
+		}
+	}
+}
+
+// policyDirective returns one directive's value out of a CSP header.
+func policyDirective(policy, name string) string {
+	for _, part := range strings.Split(policy, ";") {
+		part = strings.TrimSpace(part)
+		if value, found := strings.CutPrefix(part, name+" "); found {
+			return value
+		}
+	}
+	return ""
 }

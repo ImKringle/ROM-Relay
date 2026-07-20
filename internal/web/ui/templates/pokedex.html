@@ -1,0 +1,203 @@
+{{define "pokedex"}}{{template "base" .}}{{end}}
+
+{{define "title"}}Pokédex{{end}}
+
+{{define "content"}}
+<div class="hero mb-5 p-[clamp(18px,3.5vw,32px)]">
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">Pokédex</h1>
+      <p class="m-0 mt-1 max-w-3xl text-sm text-[var(--color-muted)]">
+        Every species you hold or have caught, built from the saves you upload.
+      </p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <a class="button" href="/trainers{{.Token}}">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a5 5 0 0 1 5 5c0 2.8-2.2 5-5 5s-5-2.2-5-5a5 5 0 0 1 5-5Z M4 21c.8-3.6 4-6 8-6s7.2 2.4 8 6"/></svg>
+        Trainers
+      </a>
+      <button class="button" type="button" data-lookup-open>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.3-4.3"/></svg>
+        Pokemon Lookup
+      </button>
+      <button class="button button--primary" type="button" data-upload-open>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+        Upload a save
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-scrim" id="upload-modal" data-upload-scrim>
+  <div class="modal w-[min(480px,100%)]" role="dialog" aria-modal="true" aria-labelledby="upload-modal-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      {{template "save-upload" dict "Intro" "Upload a save and its Pokémon appear below. ROM Relay works out which game it is from, and keeps the save in your vault."}}
+    </div>
+  </div>
+</div>
+
+{{/* Pokemon Lookup: a pure reference-data search (type, move-by-method,
+     version availability), independent of any trainer's caught/seen state.
+     Results render only in this widget, never in the main dex grid above -
+     this is a view-only API lookup, not another dex scope. */}}
+<div class="modal-scrim" id="lookup-modal" data-lookup-scrim>
+  <div class="modal w-[min(640px,100%)]" role="dialog" aria-modal="true" aria-labelledby="lookup-modal-title">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <h2 class="m-0 mt-1 text-xl" id="lookup-modal-title">Pokemon Lookup</h2>
+      <p class="mt-1 text-sm text-[var(--color-muted)]">Search species by type, by a move they learn, or by which game they're obtainable in. This is a reference lookup, not your Pokédex, so caught/seen status does not apply.</p>
+
+      <form class="mt-3 grid gap-2.5 sm:grid-cols-2" data-lookup-form>
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-muted)]">Type</span>
+          <select class="field" name="type">
+            <option value="">Any type</option>
+            <option value="normal">Normal</option>
+            <option value="fire">Fire</option>
+            <option value="water">Water</option>
+            <option value="electric">Electric</option>
+            <option value="grass">Grass</option>
+            <option value="ice">Ice</option>
+            <option value="fighting">Fighting</option>
+            <option value="poison">Poison</option>
+            <option value="ground">Ground</option>
+            <option value="flying">Flying</option>
+            <option value="psychic">Psychic</option>
+            <option value="bug">Bug</option>
+            <option value="rock">Rock</option>
+            <option value="ghost">Ghost</option>
+            <option value="dragon">Dragon</option>
+            <option value="dark">Dark</option>
+            <option value="steel">Steel</option>
+            <option value="fairy">Fairy</option>
+          </select>
+        </label>
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-muted)]">Learns move (via)</span>
+          <div class="flex gap-1.5">
+            <input class="field" name="move" placeholder="e.g. surf">
+            <select class="field" name="method">
+              <option value="">Any method</option>
+              <option value="level-up">Level up</option>
+              <option value="machine">TM/HM</option>
+            </select>
+          </div>
+        </label>
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-muted)]">Obtainable in</span>
+          <select class="field" name="in_game" data-lookup-games><option value="">Any game</option></select>
+        </label>
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-muted)]">But not in</span>
+          <select class="field" name="not_in_game" data-lookup-games><option value="">(none)</option></select>
+        </label>
+        <button class="button button--primary sm:col-span-2" type="submit">Search</button>
+      </form>
+
+      <div class="mt-3 grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2" data-lookup-results></div>
+    </div>
+  </div>
+</div>
+
+<section>
+  <div class="surface mb-4 p-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="m-0 text-sm text-[var(--color-muted)]" id="dex-stats" role="status">Loading…</p>
+      <span class="eyebrow eyebrow--muted" id="dex-shiny"></span>
+    </div>
+    <div class="kernelbar my-2.5"><i id="dex-progress"></i></div>
+
+    {{/* Region first, game second: a region is a filter on its own, and a game
+         inside it is an optional narrowing. Both rows are filled by JS. */}}
+    <div class="mt-3 grid gap-2">
+      <div class="flex flex-wrap items-center gap-1.5" id="dex-regions"></div>
+      <div class="flex flex-wrap items-center gap-1.5" id="dex-games" hidden></div>
+      <div class="flex flex-wrap items-center gap-4" id="dex-controls"></div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2" id="dex-grid"></div>
+</section>
+
+{{/* The species panel: reference data for one Pokémon. The identity block
+     (sprite, name, types, flavour text) stays always visible; everything else
+     is a chapter that opens on demand, so the panel starts short rather than
+     as a wall of always-open sections. */}}
+<div class="modal-scrim" id="species-modal" data-species-scrim>
+  <div class="modal w-[min(680px,100%)]" role="dialog" aria-modal="true" aria-labelledby="species-name">
+    <button class="button button--small absolute right-3 top-3 z-10" type="button" data-modal-close aria-label="Close">✕</button>
+    <div class="p-[clamp(16px,3vw,24px)]">
+      <div class="flex items-start gap-4">
+        <span class="grid h-28 w-28 shrink-0 place-items-center rounded-lg border border-[var(--color-line)] bg-transparent">
+          <img class="h-24 w-24 [image-rendering:pixelated]" id="species-sprite" alt="" width="96" height="96">
+        </span>
+        <div class="min-w-0 flex-1">
+          <span class="eyebrow" id="species-number"></span>
+          <h2 class="m-0 text-xl capitalize" id="species-name"></h2>
+          <p class="m-0 text-sm text-[var(--color-muted)]" id="species-genus"></p>
+          <div class="mt-2 flex flex-wrap gap-1.5" id="species-types"></div>
+        </div>
+      </div>
+
+      <p class="mt-4 text-sm leading-relaxed" id="species-flavor"></p>
+
+      <div class="mt-4 grid gap-2.5" id="species-chapters">
+        <details class="chapter surface" open>
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Type Matchups</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-matchup-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-matchups"></div>
+        </details>
+
+        <details class="chapter surface">
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Base Stats</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-stats-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-stats"></div>
+        </details>
+
+        <details class="chapter surface">
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Breeding</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-breeding-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-breeding"></div>
+        </details>
+
+        <details class="chapter surface">
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Moves</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-moves-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-moves"></div>
+        </details>
+
+        <details class="chapter surface" id="species-evolution-chapter">
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Evolution</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-evolution-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-evolution"></div>
+        </details>
+
+        <details class="chapter surface" id="species-encounters-chapter">
+          <summary class="flex items-center gap-2.5 p-3">
+            <span class="chapter-mark text-[var(--color-faint)]">▸</span>
+            <span class="eyebrow">Where to Find It</span>
+            <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-muted)]" id="species-encounters-glance"></span>
+          </summary>
+          <div class="border-t border-[var(--color-line-soft)] p-3 pt-2.5" id="species-encounters"></div>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}

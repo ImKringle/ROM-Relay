@@ -69,6 +69,9 @@ func TestRecipeIndexStableIDBaseMatchAndResultLink(t *testing.T) {
 	if err = store.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if err = store.HashPending(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
 	m := NewManager(store, ManagerConfig{LibraryDirectory: library, OutputDirectory: output, ArtworkDirectory: filepath.Join(d, "art"), MaxROMBytes: 1 << 20, MaxPatchBytes: 1 << 20, Timeout: time.Second})
 	if err = m.ScanRecipes(context.Background()); err != nil {
 		t.Fatal(err)
@@ -127,6 +130,9 @@ func TestRecipeIndexStableIDBaseMatchAndResultLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = store.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.HashPending(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	wa, err := store.ArtifactByPath(context.Background(), wrongPath)
