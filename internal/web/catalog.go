@@ -35,6 +35,7 @@ import (
 	patcher "romrelay/internal/patch"
 	"romrelay/internal/pokemon"
 	"romrelay/internal/pokemonvault"
+	"romrelay/internal/randomizer"
 	remotelib "romrelay/internal/remote"
 	"romrelay/internal/savevault"
 	"romrelay/internal/threedscrypt"
@@ -47,6 +48,7 @@ type CatalogServer struct {
 	mediaDir             string
 	retention            time.Duration
 	patches              *patcher.Manager
+	randomizer           *randomizer.Manager
 	decryptor            *decryptor.Manager
 	remote               *remotelib.Manager
 	pokemon              *pokemon.Client
@@ -79,10 +81,12 @@ type CatalogServer struct {
 }
 
 // ConvertUploadFunc converts an uploaded .3ds/.cci file (name is used only to
-// pick the input extension) to an encrypted CIA and returns the CIA bytes.
+// pick the input extension) to a CIA and returns the CIA bytes, plus whether
+// the source content was NCCH-encrypted, so the caller can route the result
+// into the right encrypted/unencrypted destination instead of assuming one.
 // Persisting the result is publishUploadResult's job, shared with the crypt
 // upload flow, not this callback's.
-type ConvertUploadFunc func(ctx context.Context, name string, data []byte, progress func(part string, done, total int64)) (result []byte, err error)
+type ConvertUploadFunc func(ctx context.Context, name string, data []byte, progress func(part string, done, total int64)) (result []byte, encrypted bool, err error)
 type BackgroundJob struct {
 	Active  bool   `json:"active"`
 	Recent  bool   `json:"recent,omitempty"`
@@ -194,6 +198,10 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("GET /trainers", s.trainersPage)
 	m.HandleFunc("GET /pokedex/types", s.typeChartPage)
 	m.HandleFunc("GET /editor", s.pokemonEditorPage)
+	m.HandleFunc("GET /randomizer", s.randomizerPage)
+	m.HandleFunc("POST /api/randomize-jobs", s.createRandomizeJob)
+	m.HandleFunc("GET /api/randomize-jobs/{id}", s.getRandomizeJob)
+	m.HandleFunc("POST /api/randomize-jobs/{id}/retain", s.retainRandomizeJob)
 	// Old links and bookmarks still land somewhere sensible.
 	m.HandleFunc("GET /dex", redirectTo("/pokedex"))
 	m.HandleFunc("GET /userdex", redirectTo("/trainers"))
@@ -301,6 +309,7 @@ func (w *metricResponseWriter) Push(target string, opts *http.PushOptions) error
 }
 func (s *CatalogServer) Handler() http.Handler                       { return s.handler }
 func (s *CatalogServer) SetPatchManager(manager *patcher.Manager)    { s.patches = manager }
+func (s *CatalogServer) SetRandomizerManager(manager *randomizer.Manager) { s.randomizer = manager }
 func (s *CatalogServer) SetDecryptor(manager *decryptor.Manager)     { s.decryptor = manager }
 func (s *CatalogServer) SetMediaDirectory(path string)               { s.mediaDir = path }
 func (s *CatalogServer) SetRemoteManager(manager *remotelib.Manager) { s.remote = manager }

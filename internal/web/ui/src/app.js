@@ -14,6 +14,7 @@ import { wireStandaloneEditor } from "./editor.js";
 import { wireSavesList, wireUploadPanel } from "./saves.js";
 import { wireBackgroundWork, wireFBIBatch, wireFTPSend, wireGameModal, wireLibraryUpload, wireModals, wireUploadTools } from "./library.js";
 import { wirePatchWorkspace } from "./patches.js";
+import { wireRandomizer } from "./randomizer.js";
 import { wireTypeChart } from "./typechart.js";
 import { wireSetup } from "./setup.js";
 import { wireUsers } from "./users.js";
@@ -118,6 +119,7 @@ function start() {
   wireSavesList();
   wireSetup();
   wirePatchWorkspace();
+  wireRandomizer();
   wireTypeChart();
   wireAdmin();
   wireShutdown();

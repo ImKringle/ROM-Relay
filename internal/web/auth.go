@@ -142,7 +142,11 @@ func (s *CatalogServer) security(next http.Handler) http.Handler {
 		// same-origin files, so 'self' alone is enough: no inline <style> or <script>
 		// is left to exempt. Reflected data is auto-escaped by html/template and by
 		// the scripts (textContent), and every source stays same-origin.
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; img-src 'self' data:; style-src 'self'")
+		// frame-ancestors 'none' stops /login and /admin from being framed by another
+		// site for a clickjacking overlay; X-Frame-Options is the same rule for
+		// browsers that predate the CSP directive.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
 
 		if user := s.resolveUser(r); user != nil {
 			r = r.WithContext(context.WithValue(r.Context(), userContextKey{}, user))

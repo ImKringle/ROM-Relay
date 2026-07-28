@@ -689,7 +689,12 @@
   }
   .table {
     width: 100%;
-    border-collapse: collapse;
+    /* separate, not collapse: iOS Safari mispositions position:sticky cells
+       (used by the type chart's sticky header row/rail) inside a
+       border-collapse table, rows end up hidden under the header. No visual
+       change since only bottom borders are used here, nothing to double up. */
+    border-collapse: separate;
+    border-spacing: 0;
     font-size: 0.85rem;
   }
   .table th {
@@ -742,6 +747,14 @@
     background: var(--color-surface-2);
     z-index: 1;
   }
+  /* .table th also sets top:0 (sticky) on every th, which the corner cell
+     wants (it's in thead) but the rowhead doesn't (it's a tbody row, and
+     iOS Safari renders a cell sticky on both axes at once as blank/missing
+     when the table only scrolls horizontally, see the border-collapse note
+     above). Row headers stick left only. */
+  .typechart-rowhead {
+    top: auto;
+  }
   .typechart-cell {
     width: 2.4rem;
     font-weight: 650;
@@ -770,6 +783,15 @@
     image-rendering: pixelated;
     display: block;
     margin: 0 auto;
+    /* Preflight's img{max-width:100%} resolves against the table cell's
+       containing block. With 18 sibling columns pinned to a fixed width,
+       the row-header column (no explicit width of its own) gets squeezed
+       by the auto table layout until that percentage rounds to ~0, and
+       max-width always wins over an explicit width, so nothing but
+       dropping the percentage constraint fixes it. */
+    max-width: none;
+    width: 46px;
+    height: 20px;
   }
   .typechart-rowhead {
     cursor: pointer;
@@ -801,7 +823,12 @@
     font-size: 0.85rem;
   }
   .typechart-summary-chip {
+    /* Reuses .typechart-cell for its multiplier colour classes, but that
+       class also sets width: 2.4rem for the grid's single-glyph cells,
+       "Fighting 2×" doesn't fit that, override back to content width. */
     display: inline-block;
+    width: auto;
+    white-space: nowrap;
     border-radius: 7px;
     padding: 0.2rem 0.55rem;
   }

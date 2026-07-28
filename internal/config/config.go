@@ -75,6 +75,16 @@ type Patching struct {
 	TimeoutSeconds   int    `json:"timeout_seconds"`
 }
 
+// Randomizer has no Enabled flag: unlike Patching (self-contained), it's
+// useless without RandomizerSidecarURL, so that URL's presence is the on/off
+// switch, the same convention PokemonSidecarURL/NDecryptSidecarURL already use.
+type Randomizer struct {
+	OutputDirectory string `json:"output_directory"`
+	RetentionHours  int    `json:"retention_hours"`
+	MaxROMSizeMB    int    `json:"max_rom_size_mb"`
+	TimeoutSeconds  int    `json:"timeout_seconds"`
+}
+
 type Config struct {
 	LibraryDirectory         string       `json:"library_directory"`
 	DatabasePath             string       `json:"database_path"`
@@ -87,6 +97,7 @@ type Config struct {
 	Metadata                 Metadata     `json:"metadata"`
 	RemoteSearch             RemoteSearch `json:"remote_search"`
 	Patching                 Patching     `json:"patching"`
+	Randomizer               Randomizer   `json:"randomizer"`
 
 	// PokemonSidecarURL is the base URL of the PKHeX save-parsing sidecar. When
 	// empty, Pokémon save ingestion and the Living Dex are disabled.
@@ -95,6 +106,10 @@ type Config struct {
 	// NDecryptSidecarURL is the base URL of the NDecrypt sidecar. When empty,
 	// the .3ds/.cci/.nds encrypt/decrypt upload flow is disabled.
 	NDecryptSidecarURL string `json:"-"`
+
+	// RandomizerSidecarURL is the base URL of the randomizer sidecar. When
+	// empty, the ROM Randomizer tool is disabled.
+	RandomizerSidecarURL string `json:"-"`
 
 	// SaveDirectory holds users' uploaded game saves. Only metadata goes in the
 	// database, so this directory is what a backup of user saves must cover.
@@ -144,6 +159,10 @@ func Load(dir string) (Config, error) {
 	c.NDecryptSidecarURL = strings.TrimRight(sec.get("NDECRYPT_SIDECAR_URL"), "/")
 	if c.NDecryptSidecarURL == "" {
 		c.NDecryptSidecarURL = strings.TrimRight(r.str("ndecrypt", "sidecar_url"), "/")
+	}
+	c.RandomizerSidecarURL = strings.TrimRight(sec.get("RANDOMIZER_SIDECAR_URL"), "/")
+	if c.RandomizerSidecarURL == "" {
+		c.RandomizerSidecarURL = strings.TrimRight(r.str("randomizer", "sidecar_url"), "/")
 	}
 	c.AdminPassword = sec.get("ADMIN_PASSWORD")
 	c.LibraryScanIntervalHours = r.integer("library", "scan_interval_hours")
@@ -204,6 +223,11 @@ func Load(dir string) (Config, error) {
 	c.Patching.MaxROMSizeMB = r.integer("patching", "max_rom_size_mb")
 	c.Patching.MaxPatchSizeMB = r.integer("patching", "max_patch_size_mb")
 	c.Patching.TimeoutSeconds = r.integer("patching", "timeout_seconds")
+
+	c.Randomizer.OutputDirectory = r.str("randomizer", "output_directory")
+	c.Randomizer.RetentionHours = r.integer("randomizer", "retention_hours")
+	c.Randomizer.MaxROMSizeMB = r.integer("randomizer", "max_rom_size_mb")
+	c.Randomizer.TimeoutSeconds = r.integer("randomizer", "timeout_seconds")
 	if r.err != nil {
 		return Config{}, r.err
 	}
@@ -329,6 +353,20 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 	if c.Patching.TimeoutSeconds == 0 {
 		c.Patching.TimeoutSeconds = 120
 	}
+	if c.Randomizer.OutputDirectory == "" {
+		c.Randomizer.OutputDirectory = "randomized"
+	}
+	if c.Randomizer.RetentionHours == 0 {
+		c.Randomizer.RetentionHours = 24
+	}
+	if c.Randomizer.MaxROMSizeMB == 0 {
+		c.Randomizer.MaxROMSizeMB = 512
+	}
+	if c.Randomizer.TimeoutSeconds == 0 {
+		// Gen 5 randomization with heavy trainer/wild options can run tens of
+		// seconds; higher default ceiling than patching's single IPS/BPS apply.
+		c.Randomizer.TimeoutSeconds = 300
+	}
 	if c.RemoteSearch.Port == 0 {
 		c.RemoteSearch.Port = 22
 	}
@@ -364,6 +402,9 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 	}
 	if c.Patching.RetentionHours < 1 || c.Patching.MaxROMSizeMB < 1 || c.Patching.MaxPatchSizeMB < 1 || c.Patching.TimeoutSeconds < 1 {
 		return c, errors.New("patching limits must be positive")
+	}
+	if c.Randomizer.RetentionHours < 1 || c.Randomizer.MaxROMSizeMB < 1 || c.Randomizer.TimeoutSeconds < 1 {
+		return c, errors.New("randomizer limits must be positive")
 	}
 	if c.Metadata.IGDB.Enabled && (c.Metadata.IGDB.ClientID == "" || c.Metadata.IGDB.ClientSecret == "") {
 		// Degrade rather than refuse to boot: a container with restart policies

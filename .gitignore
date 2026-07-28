@@ -2,6 +2,9 @@ internal/drivers/3ds/*.bin
 /internal/drivers/cia-3ds-decryptor/*.exe
 /config.ini
 /.env
+/.claude/
+/.ua/
+
 # Users' uploaded game saves
 /storage/
 # Author-time UI tooling. internal/web/ui/dist IS committed on purpose: it is

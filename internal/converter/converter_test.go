@@ -82,7 +82,7 @@ func TestSyntheticGoldenDeterministic(t *testing.T) {
 	var hashes [2][32]byte
 	for i := range 2 {
 		dst := filepath.Join(t.TempDir(), "out.cia")
-		if err := c.Convert(context.Background(), src, dst, nil); err != nil {
+		if _, err := c.Convert(context.Background(), src, dst, nil); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := os.ReadFile(dst)
@@ -115,7 +115,7 @@ func TestZeroKeyEncrypted(t *testing.T) {
 	src := fixture(t, true, false, false, true)
 	dst := filepath.Join(t.TempDir(), "out.cia")
 	c, _ := New("")
-	if err := c.Convert(context.Background(), src, dst, nil); err != nil {
+	if _, err := c.Convert(context.Background(), src, dst, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -142,7 +142,7 @@ func TestOriginalKeyEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(t.TempDir(), "original.cia")
-	if err = (&Converter{originalKey: x}).Convert(context.Background(), p, dst, nil); err != nil {
+	if _, err = (&Converter{originalKey: x}).Convert(context.Background(), p, dst, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -164,7 +164,7 @@ func TestFailuresAndCollision(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p := fixture(t, false, false, false, true)
 			tt.mut(p)
-			if err := c.Convert(context.Background(), p, filepath.Join(t.TempDir(), "o.cia"), nil); err == nil {
+			if _, err := c.Convert(context.Background(), p, filepath.Join(t.TempDir(), "o.cia"), nil); err == nil {
 				t.Fatal("wanted error")
 			}
 		})
@@ -172,7 +172,7 @@ func TestFailuresAndCollision(t *testing.T) {
 	p := fixture(t, false, false, false, true)
 	dst := filepath.Join(t.TempDir(), "exists.cia")
 	os.WriteFile(dst, []byte("mine"), 0600)
-	if err := c.Convert(context.Background(), p, dst, nil); err == nil {
+	if _, err := c.Convert(context.Background(), p, dst, nil); err == nil {
 		t.Fatal("collision accepted")
 	}
 	b, _ := os.ReadFile(dst)
@@ -186,7 +186,7 @@ func TestCancellationRemovesPartial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	c, _ := New("")
-	err := c.Convert(ctx, p, dst, nil)
+	_, err := c.Convert(ctx, p, dst, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}

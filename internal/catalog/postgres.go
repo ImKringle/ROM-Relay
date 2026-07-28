@@ -79,6 +79,12 @@ expires_at BIGINT, format TEXT NOT NULL DEFAULT '',
 result_artifact_id TEXT NOT NULL DEFAULT '', unverified_source BOOLEAN NOT NULL DEFAULT FALSE,
 checksum_expected TEXT NOT NULL DEFAULT '', checksum_actual TEXT NOT NULL DEFAULT '',
 patch_file_id TEXT NOT NULL DEFAULT '')`,
+	`CREATE TABLE IF NOT EXISTS randomizer_jobs(
+id TEXT PRIMARY KEY, status TEXT NOT NULL, artifact_id TEXT NOT NULL,
+output_name TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL,
+error TEXT NOT NULL DEFAULT '', retain BOOLEAN NOT NULL DEFAULT FALSE,
+expires_at BIGINT, result_artifact_id TEXT NOT NULL DEFAULT '',
+settings_json TEXT NOT NULL DEFAULT '')`,
 	`CREATE TABLE IF NOT EXISTS scheduler_state(
 name TEXT PRIMARY KEY, last_run BIGINT NOT NULL, status TEXT NOT NULL DEFAULT '')`,
 	`CREATE TABLE IF NOT EXISTS libretro_entries(

@@ -81,9 +81,9 @@ func TestEveryToolIsFullyDescribed(t *testing.T) {
 // TestPokemonToolsGroupsPokedexAndTrainers pins the nav shell after the
 // 2026-07-18 UI Audit Phase 5 split: Trainers left the Pokédex page for its
 // own route, so "Pokémon Tools" now groups children (Pokédex, Trainers,
-// PokeHome, Editor, and Type Chart, the last two added in the same-day QA
-// pass that gave the standalone Editor and Type Chart their own nav entries)
-// and the base template renders it as a dropdown rather than a plain link.
+// PokeHome, Editor, Type Chart, and ROM Randomizer, the latter added
+// alongside the ROM Randomizer tool) and the base template renders it as a
+// dropdown rather than a plain link.
 // "Admin" stays a plain link (Route "/admin") rather than a group: a
 // dropdown/disclosure nav entry ("the waffle") was explicitly rejected in
 // favor of one link to a real landing page, so it never has Children at all.
@@ -98,11 +98,11 @@ func TestPokemonToolsGroupsPokedexAndTrainers(t *testing.T) {
 			admin = &list[i]
 		}
 	}
-	if pokemonTools == nil || len(pokemonTools.Children) != 5 ||
+	if pokemonTools == nil || len(pokemonTools.Children) != 6 ||
 		pokemonTools.Children[0].ID != "pokedex" || pokemonTools.Children[1].ID != "trainers" ||
 		pokemonTools.Children[2].ID != "pokehome" || pokemonTools.Children[3].ID != "pokemon-editor" ||
-		pokemonTools.Children[4].ID != "type-chart" {
-		t.Fatalf("Pokémon Tools must group Pokédex, Trainers, PokeHome, Editor, then Type Chart: %#v", pokemonTools)
+		pokemonTools.Children[4].ID != "type-chart" || pokemonTools.Children[5].ID != "rom-randomizer" {
+		t.Fatalf("Pokémon Tools must group Pokédex, Trainers, PokeHome, Editor, Type Chart, then ROM Randomizer: %#v", pokemonTools)
 	}
 	if admin == nil || len(admin.Children) != 0 || admin.Route != "/admin" {
 		t.Fatalf("Admin must be a plain link to /admin, not a group: %#v", admin)

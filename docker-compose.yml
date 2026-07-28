@@ -59,6 +59,16 @@ services:
     expose:
       - "8082"
 
+  # ROM Randomizer sidecar (Java, vendors the official Universal Pokemon
+  # Randomizer ZX release jar). Reachable only on the internal compose
+  # network. The Go app calls it to randomize a Gen 1-5 cartridge ROM.
+  randomizer:
+    build:
+      context: ./sidecar/randomizer
+    restart: unless-stopped
+    expose:
+      - "8083"
+
   romrelay:
     build:
       context: .
@@ -70,6 +80,8 @@ services:
       pkhex:
         condition: service_started
       ndecrypt:
+        condition: service_started
+      randomizer:
         condition: service_started
     # App secrets (tokens, IGDB, SFTP password) are passed straight into the
     # container environment, where ROM Relay reads them at runtime.
@@ -84,6 +96,8 @@ services:
       POKEMON_SIDECAR_URL: http://pkhex:8081
       # Where the Go app reaches the NDecrypt sidecar.
       NDECRYPT_SIDECAR_URL: http://ndecrypt:8082
+      # Where the Go app reaches the randomizer sidecar.
+      RANDOMIZER_SIDECAR_URL: http://randomizer:8083
       # The address to advertise in catalog/QR/download URLs. Behind the
       # Cloudflare Tunnel, set PUBLIC_BASE_URL to the tunnel hostname in
       # .env, e.g. PUBLIC_BASE_URL=https://romrelay.kringleslab.dev
@@ -107,6 +121,7 @@ services:
       - romrelay-metadata:/app/data/metadata
       - romrelay-patched:/app/data/patched
       - romrelay-patches:/app/data/patches
+      - romrelay-randomized:/app/data/randomized
       # Users' uploaded game saves. Back this up: it is not in the database.
       - romrelay-storage:/app/data/storage
 
@@ -121,3 +136,5 @@ volumes:
     name: romrelay-patched
   romrelay-patches:
     name: romrelay-patches
+  romrelay-randomized:
+    name: romrelay-randomized

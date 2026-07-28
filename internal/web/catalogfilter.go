@@ -18,6 +18,12 @@ type catalogFilter struct {
 	Platforms  map[string]bool
 	Statuses   map[string]bool
 	Encryption string
+	// ShowEncrypted is the Library page's default-off safety net: unless set,
+	// a game whose only artifacts are encrypted (no decrypted/plain variant)
+	// stays out of the main view. It's a checkbox, not a facet, and only
+	// applies here: FTPd and the Batch Installer never call filterGames, so
+	// they always see everything.
+	ShowEncrypted bool
 }
 
 // facetValue is one checkbox: what it filters, how it reads, how many games it
@@ -30,14 +36,19 @@ type facetValue struct {
 }
 
 type catalogFacetSet struct {
-	Platforms  []facetValue
-	Statuses   []facetValue
-	Encryption []facetValue
+	Platforms []facetValue
+	Statuses  []facetValue
+	// HasEncryption gates the Show Encrypted checkbox: true when at least one
+	// game in view carries an encryption state (3DS CIA or NDS cart). Unlike
+	// Platforms/Statuses this isn't a multi-value facet — encryption has
+	// exactly one control (the ShowEncrypted checkbox on catalogFilter), so
+	// there's nothing per-value to list or count.
+	HasEncryption bool
 }
 
 // Any returns whether there is anything to show in the panel at all.
 func (f catalogFacetSet) Any() bool {
-	return len(f.Platforms) > 0 || len(f.Statuses) > 0 || len(f.Encryption) > 0
+	return len(f.Platforms) > 0 || len(f.Statuses) > 0 || f.HasEncryption
 }
 
 // Active counts the applied filters, for the drawer button's badge.
@@ -68,14 +79,10 @@ func parseCatalogFilter(values url.Values) catalogFilter {
 		Platforms: platforms,
 		Statuses:  statuses,
 	}
-	// Encryption is a 3DS-only distinction (an encrypted CIA installs on a
-	// console, an unencrypted one is for emulators), so it applies only when that
-	// platform is in view.
 	if encryption := values.Get("encryption"); encryption == "encrypted" || encryption == "unencrypted" {
-		if len(filter.Platforms) == 0 || filter.Platforms["3ds"] {
-			filter.Encryption = encryption
-		}
+		filter.Encryption = encryption
 	}
+	filter.ShowEncrypted = values.Get("show_encrypted") == "1"
 	return filter
 }
 
@@ -157,6 +164,12 @@ func filterGames(games []catalog.Game, filter catalogFilter) []catalog.Game {
 		if filter.Encryption != "" && !hasEncryption(game, filter.Encryption) {
 			continue
 		}
+		// Only applies when no explicit encryption filter is chosen: picking
+		// "encrypted" is itself a request to see encrypted games, so the
+		// safety net must not then filter those same games back out.
+		if filter.Encryption == "" && !filter.ShowEncrypted && game.Encryption == "encrypted" {
+			continue
+		}
 		if needle != "" && !strings.Contains(searchFold(haystackFor(game)), needle) {
 			continue
 		}
@@ -199,34 +212,22 @@ func catalogFacets(games []catalog.Game, applied ...catalogFilter) catalogFacetS
 		filter = applied[0]
 	}
 	platforms, statuses := map[string]int{}, map[string]int{}
-	encryption := map[string]int{}
+	anyEncryption := false
 	for _, game := range games {
 		platforms[game.Platform]++
 		statuses[statusOf(game)]++
-		// Encryption only means something for 3DS content: an encrypted CIA
-		// installs on a console, an unencrypted one is for emulators.
-		if game.Platform == "3ds" {
-			for _, state := range []string{"encrypted", "unencrypted"} {
-				if hasEncryption(game, state) {
-					encryption[state]++
-				}
-			}
+		if game.Encryption != "" {
+			anyEncryption = true
 		}
 	}
-	set := catalogFacetSet{
+	return catalogFacetSet{
 		Platforms: facetsFrom(platforms, filter.Platforms, platformLabel),
 		Statuses:  facetsFrom(statuses, filter.Statuses, statusLabel),
+		// Offered only when at least one game actually carries an encryption
+		// state (3DS CIA or NDS cart content), so it's not a dead control for
+		// a GBA-only library.
+		HasEncryption: anyEncryption,
 	}
-	// The encryption choice is offered only while 3DS content is in view, so it
-	// is not a control that does nothing for a GBA-only library.
-	if len(filter.Platforms) == 0 || filter.Platforms["3ds"] {
-		selected := map[string]bool{}
-		if filter.Encryption != "" {
-			selected[filter.Encryption] = true
-		}
-		set.Encryption = facetsFrom(encryption, selected, encryptionLabel)
-	}
-	return set
 }
 
 func facetsFrom(counts map[string]int, checked map[string]bool, label func(string) string) []facetValue {
@@ -246,13 +247,6 @@ func platformLabel(id string) string {
 		}
 	}
 	return strings.ToUpper(id)
-}
-
-func encryptionLabel(state string) string {
-	if state == "unencrypted" {
-		return "Unencrypted CIA"
-	}
-	return "Encrypted CIA"
 }
 
 func statusLabel(status string) string {

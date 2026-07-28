@@ -65,8 +65,14 @@ public static class TrainerReader
 
     // Badges are BITFIELDS, not counts, the count is the population count. The
     // accessor differs per generation and there is no interface to lean on:
-    // SAV4.Badges is a byte (8), HGSS keeps its 16 in Badges16, and gen 5 reaches
-    // them through SAV5.Misc (not Blocks.Misc). Gen 7 has no badges at all.
+    // SAV4.Badges is a byte (8), and gen 5 reaches them through SAV5.Misc (not
+    // Blocks.Misc). Gen 7 has no badges at all.
+    //
+    // HGSS is the odd one out: despite its name, SAV4HGSS.Badges16 is NOT a
+    // combined 16-bit value, it is one more byte (General[Trainer1+0x1F], Kanto's
+    // 8) sitting beside the base SAV4.Badges byte (General[Trainer1+0x1A],
+    // Johto's 8). Reading Badges16 alone silently drops Johto and reports at
+    // most 8/16 for a save with every badge.
     public static ProgressDTO? ReadProgress(SaveFile sav, Dictionary<string, string> notes)
     {
         switch (sav)
@@ -78,7 +84,9 @@ public static class TrainerReader
             case SAV3 g3:
                 return Badges(g3.Badges, 8);
             case SAV4HGSS hgss:
-                return Badges(hgss.Badges16, 16);
+                // Johto in the low byte, Kanto in the high byte: see the doc
+                // comment above for why this isn't just hgss.Badges16.
+                return Badges(hgss.Badges | (hgss.Badges16 << 8), 16);
             case SAV4 g4:
                 return Badges(g4.Badges, 8);
             case SAV5 g5:

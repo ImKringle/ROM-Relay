@@ -107,7 +107,14 @@ func platformDirFor(ext string) (string, bool) {
 // caller retains it, exactly like a patch job's output. jobID prefixes the
 // filename so two concurrent uploads producing the same basename never
 // collide.
-func (s *CatalogServer) publishUploadResult(ctx context.Context, jobID, name string, data []byte) (catalog.Artifact, error) {
+//
+// state is "encrypted", "unencrypted", or "" for a format catalog.Store's
+// encryptionFor doesn't classify (e.g. a raw .3ds/.cci cart). Non-empty, it
+// nests the file one folder deeper so the same path-based label the
+// permanent library uses applies here too: skipping this for a crypt job's
+// output would silently mislabel it "encrypted" (encryptionFor's default)
+// regardless of what direction the job actually ran.
+func (s *CatalogServer) publishUploadResult(ctx context.Context, jobID, name, state string, data []byte) (catalog.Artifact, error) {
 	if s.uploadResultsDir == "" {
 		return catalog.Artifact{}, errors.New("upload staging directory is not configured")
 	}
@@ -116,6 +123,9 @@ func (s *CatalogServer) publishUploadResult(ctx context.Context, jobID, name str
 		return catalog.Artifact{}, fmt.Errorf("%s has no recognized platform to catalog it under", filepath.Ext(name))
 	}
 	dir := filepath.Join(s.uploadResultsDir, platformDir)
+	if state != "" {
+		dir = filepath.Join(dir, state)
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return catalog.Artifact{}, err
 	}
@@ -243,13 +253,17 @@ func (s *CatalogServer) runConvertJob(w http.ResponseWriter, r *http.Request, na
 
 	go func() {
 		ctx := context.Background()
-		result, err := s.convertUpload(ctx, name, data, nil)
+		result, encrypted, err := s.convertUpload(ctx, name, data, nil)
 		if err != nil {
 			job.fail(err)
 			return
 		}
 		outName := strings.TrimSuffix(filepath.Base(name), ext) + ".cia"
-		a, err := s.publishUploadResult(ctx, id, outName, result)
+		state := "unencrypted"
+		if encrypted {
+			state = "encrypted"
+		}
+		a, err := s.publishUploadResult(ctx, id, outName, state, result)
 		if err != nil {
 			job.fail(err)
 			return
@@ -388,7 +402,19 @@ func (s *CatalogServer) runCryptJob(w http.ResponseWriter, r *http.Request, name
 			job.fail(err)
 			return
 		}
-		a, err := s.publishUploadResult(ctx, id, filepath.Base(name), result)
+		// Only formats catalog.Store's encryptionFor actually classifies (3DS
+		// CIA, NDS cart) get nested by state; a raw .3ds/.cci cart has no such
+		// distinction in the library, so it stays flat like before.
+		state := ""
+		switch {
+		case ext == ".cia", threedscrypt.SupportsExtension(ext) && (ext == ".nds" || ext == ".ds" || ext == ".srl" || ext == ".dsi" || ext == ".ids"):
+			if direction == "decrypt" {
+				state = "unencrypted"
+			} else {
+				state = "encrypted"
+			}
+		}
+		a, err := s.publishUploadResult(ctx, id, filepath.Base(name), state, result)
 		if err != nil {
 			job.fail(err)
 			return

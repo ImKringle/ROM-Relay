@@ -71,6 +71,13 @@ type PatchJobRecord struct {
 	CreatedAt, UpdatedAt                               time.Time
 	ExpiresAt                                          *time.Time
 }
+type RandomizerJobRecord struct {
+	ID, Status, ArtifactID, OutputName, Error string
+	ResultArtifactID, SettingsJSON            string
+	Retain                                    bool
+	CreatedAt, UpdatedAt                      time.Time
+	ExpiresAt                                 *time.Time
+}
 type PatchRecipe struct {
 	ID              string `json:"id"`
 	Platform        string `json:"platform"`
@@ -278,6 +285,7 @@ CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, game_id TEXT NOT NULL 
 CREATE INDEX IF NOT EXISTS artifacts_game ON artifacts(game_id);
 CREATE TABLE IF NOT EXISTS patch_files(id TEXT PRIMARY KEY,path TEXT NOT NULL UNIQUE,size INTEGER NOT NULL,sha256 TEXT NOT NULL,extension TEXT NOT NULL,mod_time INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS patch_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,artifact_id TEXT NOT NULL,output_name TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '',retain BOOLEAN NOT NULL DEFAULT FALSE,expires_at INTEGER);
+CREATE TABLE IF NOT EXISTS randomizer_jobs(id TEXT PRIMARY KEY,status TEXT NOT NULL,artifact_id TEXT NOT NULL,output_name TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '',retain BOOLEAN NOT NULL DEFAULT FALSE,expires_at INTEGER,result_artifact_id TEXT NOT NULL DEFAULT '',settings_json TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS scheduler_state(name TEXT PRIMARY KEY,last_run INTEGER NOT NULL,status TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL DEFAULT '',role TEXT NOT NULL DEFAULT 'user',created_at INTEGER NOT NULL,disabled BOOLEAN NOT NULL DEFAULT FALSE,must_change_password BOOLEAN NOT NULL DEFAULT FALSE);
 CREATE TABLE IF NOT EXISTS pokemon_instances(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,fingerprint TEXT NOT NULL,species INTEGER NOT NULL,species_name TEXT NOT NULL DEFAULT '',nickname TEXT NOT NULL DEFAULT '',level INTEGER NOT NULL DEFAULT 0,nature TEXT NOT NULL DEFAULT '',ability TEXT NOT NULL DEFAULT '',gender TEXT NOT NULL DEFAULT '',shiny BOOLEAN NOT NULL DEFAULT FALSE,is_egg BOOLEAN NOT NULL DEFAULT FALSE,form INTEGER NOT NULL DEFAULT 0,generation INTEGER NOT NULL DEFAULT 0,ivs_json TEXT NOT NULL DEFAULT '{}',evs_json TEXT NOT NULL DEFAULT '{}',moves_json TEXT NOT NULL DEFAULT '[]',held_item TEXT NOT NULL DEFAULT '',ball INTEGER NOT NULL DEFAULT 0,pid INTEGER NOT NULL DEFAULT 0,origin_game TEXT NOT NULL DEFAULT '',origin_ot TEXT NOT NULL DEFAULT '',source_save TEXT NOT NULL DEFAULT '',origin_save_id TEXT NOT NULL DEFAULT '',pokemon_binary BLOB,created_at INTEGER NOT NULL,home_deposited_at INTEGER,home_last_withdrawn_at INTEGER);
@@ -505,7 +513,13 @@ func (s *Store) EnsureDirectories() error {
 	if err := os.MkdirAll(filepath.Join(s.root, "3ds", "cia", "encrypted"), 0755); err != nil {
 		return err
 	}
-	return os.MkdirAll(filepath.Join(s.root, "3ds", "cia", "unencrypted"), 0755)
+	if err := os.MkdirAll(filepath.Join(s.root, "3ds", "cia", "unencrypted"), 0755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(s.root, "nds", "encrypted"), 0755); err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(s.root, "nds", "unencrypted"), 0755)
 }
 
 // Reconcile recursively indexes supported files from their headers alone, so a
@@ -1089,6 +1103,9 @@ func (s *Store) CleanupExpired(ctx context.Context) (deleted, deferred int, fail
 			_, e = s.texecCtx(ctx, tx, `DELETE FROM patch_jobs WHERE result_artifact_id=?`, c.id)
 		}
 		if e == nil {
+			_, e = s.texecCtx(ctx, tx, `DELETE FROM randomizer_jobs WHERE result_artifact_id=?`, c.id)
+		}
+		if e == nil {
 			_, e = s.texecCtx(ctx, tx, `DELETE FROM games WHERE NOT EXISTS(SELECT 1 FROM artifacts WHERE artifacts.game_id=games.id)`)
 		}
 		if e != nil {
@@ -1182,8 +1199,51 @@ func (s *Store) DeletePatchJob(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *Store) SaveRandomizerJob(ctx context.Context, j RandomizerJobRecord) error {
+	var expires any
+	if j.ExpiresAt != nil {
+		expires = j.ExpiresAt.Unix()
+	}
+	_, err := s.execCtx(ctx, `INSERT INTO randomizer_jobs(id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,result_artifact_id,settings_json) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,error=excluded.error,retain=excluded.retain,expires_at=excluded.expires_at,result_artifact_id=excluded.result_artifact_id`, j.ID, j.Status, j.ArtifactID, j.OutputName, j.CreatedAt.Unix(), j.UpdatedAt.Unix(), j.Error, j.Retain, expires, j.ResultArtifactID, j.SettingsJSON)
+	return err
+}
+func (s *Store) RandomizerJob(ctx context.Context, id string) (RandomizerJobRecord, error) {
+	var j RandomizerJobRecord
+	var created, updated int64
+	var expires sql.NullInt64
+	err := s.queryRowCtx(ctx, `SELECT id,status,artifact_id,output_name,created_at,updated_at,error,retain,expires_at,result_artifact_id,settings_json FROM randomizer_jobs WHERE id=?`, id).Scan(&j.ID, &j.Status, &j.ArtifactID, &j.OutputName, &created, &updated, &j.Error, &j.Retain, &expires, &j.ResultArtifactID, &j.SettingsJSON)
+	j.CreatedAt = time.Unix(created, 0)
+	j.UpdatedAt = time.Unix(updated, 0)
+	if expires.Valid {
+		v := time.Unix(expires.Int64, 0)
+		j.ExpiresAt = &v
+	}
+	return j, err
+}
+func (s *Store) DeleteRandomizerJob(ctx context.Context, id string) error {
+	_, err := s.execCtx(ctx, `DELETE FROM randomizer_jobs WHERE id=?`, id)
+	return err
+}
+
+// encryptionHasCrypt reports whether a's platform/extension is one that
+// distinguishes encrypted from decrypted content at all (3DS CIA, NDS cart
+// dump). Anything else, GBA/SNES/etc, has no such concept.
+func encryptionHasCrypt(a Artifact) bool {
+	switch {
+	case a.Platform == "3ds" && strings.EqualFold(a.Extension, ".cia"):
+		return true
+	case a.Platform == "nds" && (strings.EqualFold(a.Extension, ".nds") || strings.EqualFold(a.Extension, ".ds") || strings.EqualFold(a.Extension, ".srl") || strings.EqualFold(a.Extension, ".dsi") || strings.EqualFold(a.Extension, ".ids")):
+		return true
+	default:
+		return false
+	}
+}
+
+// encryptionFor trusts folder placement, not file content: any platform with
+// an encrypted/unencrypted subfolder split (3ds/cia, nds) is labeled off
+// whichever of those two path segments the artifact sits under.
 func encryptionFor(a Artifact) string {
-	if a.Platform != "3ds" || !strings.EqualFold(a.Extension, ".cia") {
+	if !encryptionHasCrypt(a) {
 		return ""
 	}
 	parts := strings.FieldsFunc(strings.ToLower(filepath.ToSlash(filepath.Dir(a.Path))), func(r rune) bool { return r == '/' })
@@ -1191,9 +1251,22 @@ func encryptionFor(a Artifact) string {
 		if part == "unencrypted" {
 			return "unencrypted"
 		}
+		if part == "encrypted" {
+			return "encrypted"
+		}
 	}
-	// Converted CIAs and legacy files directly under 3ds/cia default encrypted.
-	return "encrypted"
+	// No explicit subfolder. 3ds/cia has defaulted "encrypted" here since
+	// before the encrypted/unencrypted split existed (a flat legacy CIA is
+	// console-installable, i.e. encrypted) — keep that convention so existing
+	// 3DS libraries don't reclassify. NDS has no such legacy: every existing
+	// library's flat nds/*.nds file predates this classification entirely, so
+	// defaulting it to "encrypted" would drop it out of the default Library
+	// view (Show Encrypted starts unchecked) with no migration step to fix
+	// it. Leave it "" (unknown, not gated) until it's explicitly sorted.
+	if a.Platform == "3ds" {
+		return "encrypted"
+	}
+	return ""
 }
 
 func gameEncryption(artifacts []Artifact) string {

@@ -55,20 +55,26 @@ func New(boot9 string) (*Converter, error) {
 
 type partition struct{ off, size int64 }
 
-func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progress) (err error) {
+// Convert repackages a raw .3ds/.cci cart into a CIA. It reports (via the
+// second return value) whether the source content was NCCH-encrypted: the
+// body payload is copied through unchanged either way, so a decrypted-format
+// source (e.g. a GodMode9 "[Decrypted]" dump) yields a decrypted CIA, and an
+// encrypted source yields an encrypted CIA. Callers route the output folder
+// off this rather than assuming one state.
+func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progress) (encrypted bool, err error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer in.Close()
 	st, err := in.Stat()
 	if err != nil {
-		return err
+		return false, err
 	}
 	read := func(off int64, n int) ([]byte, error) { b := make([]byte, n); _, e := in.ReadAt(b, off); return b, e }
 	ncsd, err := read(0x100, 0x40)
 	if err != nil || string(ncsd[:4]) != "NCSD" {
-		return errors.New("missing NCSD magic (not a CCI)")
+		return false, errors.New("missing NCSD magic (not a CCI)")
 	}
 	titleLE := ncsd[8:16]
 	titleID := reverse(titleLE)
@@ -79,19 +85,19 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	}
 	game := parts[0]
 	if game.off < 0x200 || game.size < 0x600 || game.off+game.size > st.Size() {
-		return errors.New("invalid game partition bounds")
+		return false, errors.New("invalid game partition bounds")
 	}
 	for _, p := range parts[1:] {
 		if p.off != 0 && (p.size == 0 || p.off+p.size > st.Size()) {
-			return errors.New("invalid auxiliary partition bounds")
+			return false, errors.New("invalid auxiliary partition bounds")
 		}
 	}
 	header, err := read(game.off, 0x200)
 	if err != nil || string(header[0x100:0x104]) != "NCCH" {
-		return errors.New("missing NCCH magic (not a retail CCI)")
+		return false, errors.New("missing NCCH magic (not a retail CCI)")
 	}
 	flags := header[0x18f]
-	encrypted := flags&4 == 0
+	encrypted = flags&4 == 0
 	zero := flags&1 != 0
 	var key []byte
 	if encrypted {
@@ -99,25 +105,25 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 			key = make([]byte, 16)
 		} else {
 			if len(c.originalKey) != 16 {
-				return errors.New("Original-NCCH encryption requires a validated boot9.bin or boot9_prot.bin")
+				return encrypted, errors.New("Original-NCCH encryption requires a validated boot9.bin or boot9_prot.bin")
 			}
 			key = normalKey(c.originalKey, header[:16])
 		}
 	}
 	ext, err := read(game.off+0x200, 0x400)
 	if err != nil {
-		return fmt.Errorf("read ExtHeader: %w", err)
+		return encrypted, fmt.Errorf("read ExtHeader: %w", err)
 	}
 	if encrypted {
 		cryptCTR(key, counter(titleID, 1), ext)
 	}
 	want, err := read(game.off+0x160, 32)
 	if err != nil {
-		return err
+		return encrypted, err
 	}
 	got := sha256.Sum256(ext)
 	if !equal(want, got[:]) {
-		return errors.New("invalid ExtHeader hash (dump is corrupt or encryption metadata is wrong)")
+		return encrypted, errors.New("invalid ExtHeader hash (dump is corrupt or encryption metadata is wrong)")
 	}
 	ext[0x0d] |= 2
 	patchedHash := sha256.Sum256(ext)
@@ -130,7 +136,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	exefsOff := int64(binary.LittleEndian.Uint32(header[0x1a0:0x1a4])) * mediaUnit
 	eh, err := read(game.off+exefsOff, 0x40)
 	if err != nil {
-		return errors.New("cannot read ExeFS header")
+		return encrypted, errors.New("cannot read ExeFS header")
 	}
 	if encrypted {
 		cryptCTR(key, counter(titleID, 2), eh)
@@ -146,7 +152,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 			off := int64(binary.LittleEndian.Uint32(h[8:12]))
 			icon, err = read(game.off+exefsOff+0x200+off, 0x36c0)
 			if err != nil {
-				return errors.New("truncated ExeFS icon")
+				return encrypted, errors.New("truncated ExeFS icon")
 			}
 			if encrypted {
 				ctr := addCounter(counter(titleID, 2), uint64(off/16+0x20))
@@ -156,7 +162,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 		}
 	}
 	if icon == nil {
-		return errors.New("icon not found in ExeFS")
+		return encrypted, errors.New("icon not found in ExeFS")
 	}
 
 	contentParts := []int{0}
@@ -186,7 +192,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	}
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
-		return err
+		return encrypted, err
 	}
 	ok := false
 	defer func() {
@@ -204,22 +210,22 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	binary.LittleEndian.PutUint64(base[24:], uint64(total))
 	base[0x20] = index
 	if _, err = out.Write(base); err != nil {
-		return err
+		return encrypted, err
 	}
 	if _, err = out.Write(certchain); err != nil {
-		return err
+		return encrypted, err
 	}
 	if _, err = out.Write(ticketTMD); err != nil {
-		return err
+		return encrypted, err
 	}
 	if _, err = out.Write(make([]byte, 0x96c)); err != nil {
-		return err
+		return encrypted, err
 	}
 	if _, err = out.Write(records); err != nil {
-		return err
+		return encrypted, err
 	}
 	if _, err = out.Write(make([]byte, 12+(count-1)*16)); err != nil {
-		return err
+		return encrypted, err
 	}
 	writeAt := func(off int64, b []byte) error { _, e := out.WriteAt(b, off); return e }
 	writeAt(0x2f9f, []byte{byte(count)})
@@ -227,7 +233,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	writeAt(0x2f4c, titleID)
 	writeAt(0x2f5a, save)
 	if _, err = out.Seek(0, io.SeekEnd); err != nil {
-		return err
+		return encrypted, err
 	}
 	for slot, i := range contentParts {
 		p := parts[i]
@@ -235,11 +241,11 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 		var r io.Reader = io.NewSectionReader(in, p.off, p.size)
 		if i == 0 {
 			if _, err = out.Write(header); err != nil {
-				return err
+				return encrypted, err
 			}
 			h.Write(header)
 			if _, err = out.Write(ext); err != nil {
-				return err
+				return encrypted, err
 			}
 			h.Write(ext)
 			r = io.NewSectionReader(in, p.off+0x600, p.size-0x600)
@@ -248,12 +254,12 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 		buf := make([]byte, 1024*1024)
 		for {
 			if err = ctx.Err(); err != nil {
-				return err
+				return encrypted, err
 			}
 			n, e := r.Read(buf)
 			if n > 0 {
 				if _, err = out.Write(buf[:n]); err != nil {
-					return err
+					return encrypted, err
 				}
 				h.Write(buf[:n])
 				done += int64(n)
@@ -265,7 +271,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 				break
 			}
 			if e != nil {
-				return e
+				return encrypted, e
 			}
 		}
 		sum := h.Sum(nil)
@@ -280,7 +286,7 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	ih := sha256.Sum256(info)
 	writeAt(0x2fa4, ih[:])
 	if _, err = out.Seek(0, io.SeekEnd); err != nil {
-		return err
+		return encrypted, err
 	}
 	meta := append(deps, make([]byte, 0x180)...)
 	v := make([]byte, 4)
@@ -289,19 +295,19 @@ func (c *Converter) Convert(ctx context.Context, src, dst string, progress Progr
 	meta = append(meta, make([]byte, 0xfc)...)
 	meta = append(meta, icon...)
 	if _, err = out.Write(meta); err != nil {
-		return err
+		return encrypted, err
 	}
 	if err = out.Sync(); err != nil {
-		return err
+		return encrypted, err
 	}
 	if err = out.Close(); err != nil {
-		return err
+		return encrypted, err
 	}
 	if err = Validate(dst); err != nil {
-		return err
+		return encrypted, err
 	}
 	ok = true
-	return nil
+	return encrypted, nil
 }
 
 func Validate(path string) error {

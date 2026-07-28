@@ -174,6 +174,49 @@ func TestRegionIsSearchableButIsNotAFacet(t *testing.T) {
 	}
 }
 
+// Show Encrypted defaults off: a game whose only file is encrypted (3DS CIA
+// or NDS cart) stays out of the bare Library view until the box is checked.
+// A mixed or unencrypted-only game is never held back by it.
+func TestShowEncryptedHidesEncryptedOnlyGamesByDefault(t *testing.T) {
+	games := []catalog.Game{
+		{ID: "1", Title: "Encrypted Only", Platform: "3ds", Encryption: "encrypted"},
+		{ID: "2", Title: "Unencrypted Only", Platform: "3ds", Encryption: "unencrypted"},
+		{ID: "3", Title: "Mixed", Platform: "3ds", Encryption: "mixed"},
+		{ID: "4", Title: "No Crypt Concept", Platform: "gba"},
+	}
+	bare := filteredTitlesFrom(t, games, "")
+	for _, title := range bare {
+		if title == "Encrypted Only" {
+			t.Fatalf("an encrypted-only game must not appear by default: got %v", bare)
+		}
+	}
+	if len(bare) != 3 {
+		t.Fatalf("mixed, unencrypted-only, and no-crypt-concept games must all still show: got %v", bare)
+	}
+	shown := filteredTitlesFrom(t, games, "show_encrypted=1")
+	found := false
+	for _, title := range shown {
+		found = found || title == "Encrypted Only"
+	}
+	if !found {
+		t.Fatalf("show_encrypted=1 must reveal the encrypted-only game: got %v", shown)
+	}
+}
+
+func filteredTitlesFrom(t *testing.T, games []catalog.Game, query string) []string {
+	t.Helper()
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := filterGames(games, parseCatalogFilter(values))
+	titles := make([]string, 0, len(got))
+	for _, g := range got {
+		titles = append(titles, g.Title)
+	}
+	return titles
+}
+
 func TestFacetsAreBuiltFromTheCatalogThatExists(t *testing.T) {
 	facets := catalogFacets(fixtureGames())
 	if len(facets.Platforms) != 3 {

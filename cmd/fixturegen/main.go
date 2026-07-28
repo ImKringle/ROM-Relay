@@ -23,7 +23,7 @@ func main() {
 	}
 	if *cia != "" {
 		c, _ := converter.New("")
-		if err := c.Convert(context.Background(), *out, *cia, nil); err != nil {
+		if _, err := c.Convert(context.Background(), *out, *cia, nil); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

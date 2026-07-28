@@ -31,6 +31,21 @@
   {{template "facet" dict "Legend" "Platform" "Name" "platform" "Values" .Facets.Platforms}}
   {{template "facet" dict "Legend" "Status" "Name" "status" "Values" .Facets.Statuses}}
 
+  {{if .Facets.HasEncryption}}
+  {{/* Unchecked (the default) hides any game whose only files are encrypted,
+       an encrypted-only 3DS CIA or NDS cart is console-format, not something
+       most visits want cluttering the grid. FTPd and the Batch Installer
+       never apply this filter, so encrypted files stay fully reachable
+       there regardless of this box. */}}
+  <fieldset class="mb-4 border-0 p-0">
+    <legend class="eyebrow eyebrow--muted mb-2 p-0">Encryption</legend>
+    <label class="chip">
+      <input class="sr-only" type="checkbox" name="show_encrypted" value="1" {{if .Filter.ShowEncrypted}}checked{{end}}>
+      <span>Show Encrypted</span>
+    </label>
+  </fieldset>
+  {{end}}
+
   {{/* Hidden once app.js runs: with htmx the filters apply as you click. */}}
   <button class="button button--primary mt-2 w-full justify-center" type="submit" data-js-hidden>Apply filters</button>
 </form>

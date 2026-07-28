@@ -100,6 +100,11 @@ var tools = []Tool{
 				Description: "Every attacking type against every defending type, in one reference table.",
 				Icon:        "M12 3a9 9 0 0 1 9 9H3a9 9 0 0 1 9-9Z M12 21a9 9 0 0 1-9-9h18a9 9 0 0 1-9 9Z",
 			},
+			{
+				ID: "rom-randomizer", Name: "ROM Randomizer", Route: "/randomizer", Requires: AccessUser,
+				Description: "Randomize a ROM you own with the full Universal Pokemon Randomizer ZX option set.",
+				Icon:        "M4 4h6v6H4Z M14 4h6v6h-6Z M4 14h6v6H4Z M17 14v6 M14 17h6",
+			},
 		},
 	},
 	{

@@ -166,10 +166,11 @@ async function pollUploadJob(kind, id, out) {
   out.append(qr);
 }
 
-// libraryArtifacts lists existing catalog artifacts matching one of extExts,
-// for the Convert/Crypt "From Library" picker, so those tools can run
-// against a ROM already on the Relay without downloading and re-uploading it.
-async function libraryArtifacts(extExts) {
+// libraryArtifacts lists existing catalog artifacts matching one of extExts
+// (and, if given, one platform), for the Convert/Crypt "From Library"
+// picker, so those tools can run against a ROM already on the Relay without
+// downloading and re-uploading it.
+async function libraryArtifacts(extExts, platform) {
   const response = await fetch("/api/games" + tokenSuffix());
   if (!response.ok) return [];
   const { games } = await response.json();
@@ -178,19 +179,36 @@ async function libraryArtifacts(extExts) {
     for (const artifact of game.artifacts || []) {
       const ext = (artifact.extension || "").toLowerCase();
       if (!extExts.includes(ext)) continue;
+      if (platform && (artifact.platform || game.platform) !== platform) continue;
       out.push({ id: artifact.id, label: `${game.title} · ${artifact.name}` });
     }
   }
   return out;
 }
 
+function fillLibraryOptions(select, items) {
+  select.replaceChildren(
+    ...items.map((item) => {
+      const opt = document.createElement("option");
+      opt.value = item.id;
+      opt.textContent = item.label;
+      return opt;
+    }),
+  );
+}
+
 // wireSourceToggle switches a Convert/Crypt form between an uploaded file and
 // an existing Library artifact, lazily loading the artifact picker options
-// the first time "From Library" is selected.
-function wireSourceToggle(root, form, extExts) {
+// the first time "From Library" is selected. platformSource, when given, is
+// the crypt form's 3DS/NDS/All chip row (mixing every platform in one
+// dropdown otherwise): its active chip narrows which platform the picker
+// lists, and switching it reloads the list.
+function wireSourceToggle(root, form, extExts, platformSource) {
   const buttons = root.querySelectorAll("[data-source-pick]");
   const upload = form.querySelector("[data-source-upload]");
   const library = form.querySelector("[data-source-library]");
+  const currentPlatform = () => platformSource?.querySelector(".chip--active")?.dataset.cryptPlatform || "";
+  const reload = async () => fillLibraryOptions(library, await libraryArtifacts(extExts, currentPlatform()));
   let loaded = false;
   for (const button of buttons) {
     button.addEventListener("click", async () => {
@@ -202,19 +220,20 @@ function wireSourceToggle(root, form, extExts) {
       library.hidden = !isLibrary;
       library.required = isLibrary;
       library.disabled = !isLibrary;
+      if (platformSource) platformSource.hidden = !isLibrary;
       if (isLibrary && !loaded) {
         loaded = true;
-        const items = await libraryArtifacts(extExts);
-        library.replaceChildren(
-          ...items.map((item) => {
-            const opt = document.createElement("option");
-            opt.value = item.id;
-            opt.textContent = item.label;
-            return opt;
-          }),
-        );
+        await reload();
       }
     });
+  }
+  if (platformSource) {
+    for (const chip of platformSource.querySelectorAll("[data-crypt-platform]")) {
+      chip.addEventListener("click", async () => {
+        platformSource.querySelectorAll("[data-crypt-platform]").forEach((c) => c.classList.toggle("chip--active", c === chip));
+        await reload();
+      });
+    }
   }
 }
 
@@ -251,7 +270,8 @@ export function wireUploadTools() {
   const cryptForm = document.querySelector("[data-crypt-form]");
   const cryptSource = document.querySelector("[data-crypt-source]");
   if (cryptForm && cryptSource) {
-    wireSourceToggle(cryptSource, cryptForm, [".nds", ".srl", ".dsi", ".ids", ".3ds", ".cci", ".cia"]);
+    const cryptPlatformSource = cryptForm.querySelector("[data-crypt-platform-source]");
+    wireSourceToggle(cryptSource, cryptForm, [".nds", ".srl", ".dsi", ".ids", ".3ds", ".cci", ".cia"], cryptPlatformSource);
     const directionBox = document.querySelector("[data-crypt-direction]");
     const out = document.querySelector("[data-crypt-out]");
     const library = cryptForm.querySelector("[data-source-library]");

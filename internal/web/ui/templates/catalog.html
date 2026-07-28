@@ -250,6 +250,14 @@
       </div>
       <form class="mt-3 grid gap-3" data-crypt-form>
         <input class="field" type="file" name="rom" accept=".nds,.srl,.dsi,.ids,.3ds,.cci,.cia" required aria-label="File to encrypt or decrypt" data-source-upload>
+        {{/* Narrows the From-Library list below, which otherwise mixes every
+             3DS and NDS file in one dropdown. "All" (no chip active) keeps
+             the old behaviour. */}}
+        <div class="flex flex-wrap gap-1.5" data-crypt-platform-source hidden>
+          <button class="chip chip--active" type="button" data-crypt-platform="">All</button>
+          <button class="chip" type="button" data-crypt-platform="3ds">3DS</button>
+          <button class="chip" type="button" data-crypt-platform="nds">NDS</button>
+        </div>
         <select class="field" name="artifact_id" aria-label="Library file to encrypt or decrypt" data-source-library hidden></select>
         <label class="flex items-center gap-2.5 text-sm">
           <input class="size-4" type="checkbox" name="retain" value="true">

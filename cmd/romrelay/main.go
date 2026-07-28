@@ -31,6 +31,7 @@ import (
 	"romrelay/internal/pokemon"
 	"romrelay/internal/pokemonvault"
 	"romrelay/internal/presentation"
+	"romrelay/internal/randomizer"
 	remotelib "romrelay/internal/remote"
 	"romrelay/internal/savevault"
 	"romrelay/internal/threedscrypt"
@@ -117,6 +118,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	}
 	defer func() { retErr = errors.Join(retErr, store.Close()) }()
 	store.AddArtifactRoot(cfg.Patching.OutputDirectory)
+	store.AddArtifactRoot(cfg.Randomizer.OutputDirectory)
 	externalRoot := filepath.Join(cfg.LibraryDirectory, "external", "antisocial-expert")
 	store.AddExternalArtifactRoot(externalRoot)
 	// Results from the Game Library's ad-hoc convert/encrypt/decrypt uploads:
@@ -177,6 +179,25 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	if cfg.NDecryptSidecarURL != "" {
 		ui.SetCryptClient(threedscrypt.NewClient(cfg.NDecryptSidecarURL))
 		present.Info("3DS/DS encrypt-decrypt upload enabled (sidecar %s)", "3DS/DS crypt-shucking enabled (sidecar %s)", cfg.NDecryptSidecarURL)
+	}
+	var randomizerManager *randomizer.Manager
+	if cfg.RandomizerSidecarURL != "" {
+		randomizerManager = randomizer.NewManager(store, randomizer.NewClient(cfg.RandomizerSidecarURL), randomizer.ManagerConfig{OutputDirectory: cfg.Randomizer.OutputDirectory, ArtworkDirectory: cfg.Metadata.Libretro.ThumbnailDirectory, Retention: time.Duration(cfg.Randomizer.RetentionHours) * time.Hour, MaxROMBytes: int64(cfg.Randomizer.MaxROMSizeMB) << 20, Timeout: time.Duration(cfg.Randomizer.TimeoutSeconds) * time.Second, Progress: func(job randomizer.Job, message string, done, total int64) {
+			active := job.Status == "queued" || job.Status == "running"
+			background := webui.BackgroundJob{Active: active, Message: message, Done: done, Total: total}
+			if job.Status == "failed" {
+				background.Error = message
+			}
+			ui.SetBackground("Randomizer · "+job.ID, background)
+			switch job.Status {
+			case "failed":
+				present.Error("Randomizer job %s failed: %s", "Corn randomizer job %s failed: %s", job.ID, job.Error)
+			case "completed":
+				present.Success("Randomizer job %s completed: %s", "Corn randomizer job %s finished: %s", job.ID, job.OutputName)
+			}
+		}})
+		ui.SetRandomizerManager(randomizerManager)
+		present.Info("ROM Randomizer enabled (sidecar %s)", "Corn randomizer enabled (sidecar %s)", cfg.RandomizerSidecarURL)
 	}
 	// The save vault works without the sidecar: saves are stored either way, and
 	// a recognised Pokémon save additionally feeds the Dex.
@@ -300,33 +321,35 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		conversionProgress.Stop(err != nil)
 		return err
 	})
-	ui.SetConvertUpload(func(convertCtx context.Context, name string, data []byte, progress func(string, int64, int64)) ([]byte, error) {
+	ui.SetConvertUpload(func(convertCtx context.Context, name string, data []byte, progress func(string, int64, int64)) ([]byte, bool, error) {
 		conv, err := converter.New(boot9Path)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		in, err := os.CreateTemp(uploadResultsDir, "in-*"+strings.ToLower(filepath.Ext(name)))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		inPath := in.Name()
 		defer os.Remove(inPath)
 		if _, err = in.Write(data); err != nil {
 			in.Close()
-			return nil, err
+			return nil, false, err
 		}
 		if err = in.Close(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		outPath := inPath + ".cia"
 		defer os.Remove(outPath)
-		if err = conv.Convert(convertCtx, inPath, outPath, progress); err != nil {
-			return nil, err
+		encrypted, err := conv.Convert(convertCtx, inPath, outPath, progress)
+		if err != nil {
+			return nil, false, err
 		}
 		if err = converter.Validate(outPath); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return os.ReadFile(outPath)
+		result, err := os.ReadFile(outPath)
+		return result, encrypted, err
 	})
 	srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	var workers sync.WaitGroup
@@ -768,6 +791,9 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	if patchManager != nil {
 		patchManager.Shutdown()
 	}
+	if randomizerManager != nil {
+		randomizerManager.Shutdown()
+	}
 	if remoteManager != nil {
 		remoteManager.Shutdown()
 	}
@@ -783,8 +809,7 @@ func convertV2(ctx context.Context, cfg config.Config, boot9Path string, present
 	}
 	sourceRoot := filepath.Join(cfg.LibraryDirectory, "3ds", "3ds")
 	ciaRoot := filepath.Join(cfg.LibraryDirectory, "3ds", "cia")
-	outputRoot := filepath.Join(ciaRoot, "encrypted")
-	stage := filepath.Join(outputRoot, ".romrelay-staging")
+	stage := filepath.Join(ciaRoot, ".romrelay-staging")
 	if err = os.MkdirAll(stage, 0700); err != nil {
 		return err
 	}
@@ -821,19 +846,12 @@ func convertV2(ctx context.Context, cfg config.Config, boot9Path string, present
 		if ext != ".3ds" && ext != ".cci" {
 			return nil
 		}
-		dst := filepath.Join(outputRoot, strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))+".cia")
-		legacyDst := filepath.Join(ciaRoot, filepath.Base(dst))
-		if _, err := os.Stat(dst); err == nil {
+		name := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name())) + ".cia"
+		if existing, existsErr := ciaAlreadyConverted(ciaRoot, name); existsErr != nil {
+			return existsErr
+		} else if existing != "" {
 			present.Info("Skipping %s: CIA already exists", "Skipping ear %s: CIA cob already exists", d.Name())
 			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if _, err := os.Stat(legacyDst); err == nil {
-			present.Info("Skipping %s: legacy encrypted CIA already exists", "Skipping ear %s: old encrypted cob already exists", d.Name())
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
 		}
 		pending = append(pending, path)
 		return nil
@@ -865,7 +883,7 @@ func convertV2(ctx context.Context, cfg config.Config, boot9Path string, present
 		go func() {
 			defer wg.Done()
 			for path := range jobs {
-				if err := convertOne(ctx, conv, path, outputRoot, stage, present, status, ready); err != nil {
+				if err := convertOne(ctx, conv, path, ciaRoot, stage, present, status, ready); err != nil {
 					errMu.Lock()
 					if firstErr == nil {
 						firstErr = err
@@ -891,17 +909,19 @@ feed:
 	return ctx.Err()
 }
 
-// convertOne converts a single 3DS/CCI ROM to an encrypted CIA. It is the
-// per-file body convertV2's worker pool runs concurrently: every path it
-// touches (the temp file, the destination, the progress tracker) is unique to
-// this one file, so no coordination with other in-flight conversions is
-// needed beyond what ready (reconcile + hash) already serializes internally.
-func convertOne(ctx context.Context, conv *converter.Converter, path, outputRoot, stage string, present *presentation.Presenter, status func(name, part string, done, total int64), ready func(path string)) error {
+// convertOne converts a single 3DS/CCI ROM to a CIA, landing in cia/encrypted
+// or cia/unencrypted to match the source's own crypt state (never changed by
+// conversion itself). It is the per-file body convertV2's worker pool runs
+// concurrently: every path it touches (the temp file, the destination, the
+// progress tracker) is unique to this one file, so no coordination with
+// other in-flight conversions is needed beyond what ready (reconcile + hash)
+// already serializes internally.
+func convertOne(ctx context.Context, conv *converter.Converter, path, ciaRoot, stage string, present *presentation.Presenter, status func(name, part string, done, total int64), ready func(path string)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	name := filepath.Base(path)
-	dst := filepath.Join(outputRoot, strings.TrimSuffix(name, filepath.Ext(name))+".cia")
+	ciaName := strings.TrimSuffix(name, filepath.Ext(name)) + ".cia"
 	tmp, err := os.CreateTemp(stage, "convert-*.tmp")
 	if err != nil {
 		return err
@@ -909,17 +929,18 @@ func convertOne(ctx context.Context, conv *converter.Converter, path, outputRoot
 	tmpPath := tmp.Name()
 	tmp.Close()
 	os.Remove(tmpPath)
-	present.Info("Converting %s to encrypted CIA", "Shucking %s into an encrypted CIA cob", name)
+	present.Info("Converting %s to CIA", "Shucking %s into a CIA cob", name)
 	if status != nil {
 		status(name, "preparing", 0, 0)
 	}
 	conversionProgress := present.NewConversion()
-	if err = conv.Convert(ctx, path, tmpPath, func(part string, done, total int64) {
+	encrypted, err := conv.Convert(ctx, path, tmpPath, func(part string, done, total int64) {
 		conversionProgress.Update(part, done, total)
 		if status != nil {
 			status(name, part, done, total)
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		conversionProgress.Stop(true)
 		os.Remove(tmpPath)
 		present.Error("Conversion failed for %s: %v", "Ear %s spoiled during shucking: %v", name, err)
@@ -930,15 +951,50 @@ func convertOne(ctx context.Context, conv *converter.Converter, path, outputRoot
 		os.Remove(tmpPath)
 		return fmt.Errorf("validate generated %s: %w", name, err)
 	}
+	outputRoot := filepath.Join(ciaRoot, ciaSubfolder(encrypted))
+	if err = os.MkdirAll(outputRoot, 0755); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	dst := filepath.Join(outputRoot, ciaName)
 	if err = os.Rename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
-	present.Success("Ready: %s", "Fresh encrypted cob ready: %s", filepath.Base(dst))
+	present.Success("Ready: %s", "Fresh cob ready: %s", filepath.Base(dst))
 	if ready != nil {
 		ready(dst)
 	}
 	return nil
+}
+
+// ciaSubfolder is the encrypted/unencrypted folder name for a CIA, off the
+// same detected-state bool converter.Convert returns.
+func ciaSubfolder(encrypted bool) string {
+	if encrypted {
+		return "encrypted"
+	}
+	return "unencrypted"
+}
+
+// ciaAlreadyConverted reports whether a CIA for this source name exists
+// under either destination, regardless of which crypt state it landed in:
+// the source's own state isn't known until it's actually read, so both
+// possible destinations (plus the pre-split legacy flat layout) are checked.
+func ciaAlreadyConverted(ciaRoot, name string) (string, error) {
+	candidates := []string{
+		filepath.Join(ciaRoot, "encrypted", name),
+		filepath.Join(ciaRoot, "unencrypted", name),
+		filepath.Join(ciaRoot, name),
+	}
+	for _, path := range candidates {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return path, nil
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+	}
+	return "", nil
 }
 
 func convertCatalogArtifact(ctx context.Context, cfg config.Config, boot9Path string, store *catalog.Store, artifactID string, progress converter.Progress) (err error) {
@@ -955,18 +1011,13 @@ func convertCatalogArtifact(ctx context.Context, cfg config.Config, boot9Path st
 		return err
 	}
 	ciaRoot := filepath.Join(cfg.LibraryDirectory, "3ds", "cia")
-	outputRoot := filepath.Join(ciaRoot, "encrypted")
 	name := strings.TrimSuffix(a.Name, filepath.Ext(a.Name)) + ".cia"
-	final := filepath.Join(outputRoot, name)
-	legacy := filepath.Join(ciaRoot, name)
-	for _, path := range []string{final, legacy} {
-		if _, statErr := os.Stat(path); statErr == nil {
-			return fmt.Errorf("CIA output already exists: %s", filepath.Base(path))
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
-		}
+	if existing, existsErr := ciaAlreadyConverted(ciaRoot, name); existsErr != nil {
+		return existsErr
+	} else if existing != "" {
+		return fmt.Errorf("CIA output already exists: %s", filepath.Base(existing))
 	}
-	stage := filepath.Join(outputRoot, ".romrelay-staging")
+	stage := filepath.Join(ciaRoot, ".romrelay-staging")
 	if err = os.MkdirAll(stage, 0700); err != nil {
 		return err
 	}
@@ -981,12 +1032,18 @@ func convertCatalogArtifact(ctx context.Context, cfg config.Config, boot9Path st
 	}
 	os.Remove(tmpPath)
 	defer os.Remove(tmpPath)
-	if err = conv.Convert(ctx, a.Path, tmpPath, progress); err != nil {
+	encrypted, err := conv.Convert(ctx, a.Path, tmpPath, progress)
+	if err != nil {
 		return err
 	}
 	if err = converter.Validate(tmpPath); err != nil {
 		return fmt.Errorf("converted CIA validation: %w", err)
 	}
+	outputRoot := filepath.Join(ciaRoot, ciaSubfolder(encrypted))
+	if err = os.MkdirAll(outputRoot, 0755); err != nil {
+		return err
+	}
+	final := filepath.Join(outputRoot, name)
 	if err = os.Link(tmpPath, final); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("CIA output already exists: %s", name)
