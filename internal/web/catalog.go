@@ -27,6 +27,7 @@ import (
 	"unicode"
 
 	qrcode "github.com/skip2/go-qrcode"
+	"golang.org/x/net/webdav"
 	"golang.org/x/text/unicode/norm"
 	"romrelay/internal/catalog"
 	"romrelay/internal/config"
@@ -55,6 +56,8 @@ type CatalogServer struct {
 	saves                savevault.Vault
 	pokemonFiles         pokemonvault.Vault
 	igdbEnabled          bool
+	webdavEnabled        bool
+	webdavHandler        *webdav.Handler
 	csrf                 string
 	handler              http.Handler
 	scanning             atomic.Bool
@@ -120,6 +123,11 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	s := &CatalogServer{store: store, base: strings.TrimRight(base, "/"), token: token, theme: theme, adminToken: adminToken, patchDir: patchDir, retention: retention, csrf: hex.EncodeToString(csrfSum[:]), background: map[string]BackgroundJob{}, uploadJobs: map[string]*uploadJob{}}
 	s.ready.Store(true)
 	s.setupStage.Store("ready")
+	s.webdavHandler = &webdav.Handler{
+		Prefix:     "/webdav",
+		FileSystem: catalogWebDAVFS{store: store},
+		LockSystem: webdav.NewMemLS(),
+	}
 	m := http.NewServeMux()
 	m.HandleFunc("GET /", s.index)
 	m.HandleFunc("GET /games/{id}", s.game)
@@ -237,6 +245,16 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	// directory (logo/, gender/, shiny/, typebadges/) added after it was last
 	// updated, since a new folder needs a new line nobody remembers to add.
 	m.Handle("GET /assets/", assetHandler())
+	// A bare "/webdav/" pattern (matching every method) conflicts with the
+	// "GET /" root route in net/http's mux ambiguity check, so every verb
+	// golang.org/x/net/webdav.Handler dispatches is registered explicitly.
+	for _, method := range []string{"GET", "HEAD", "OPTIONS", "PROPFIND", "PROPPATCH", "PUT", "DELETE", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "POST"} {
+		m.HandleFunc(method+" /webdav/", s.serveWebDAV)
+	}
+	m.HandleFunc("GET /account/webdav", s.webdavKeysPage)
+	m.HandleFunc("GET /api/account/webdav-keys", s.listWebDAVKeys)
+	m.HandleFunc("POST /api/account/webdav-keys", s.createWebDAVKey)
+	m.HandleFunc("DELETE /api/account/webdav-keys/{id}", s.revokeWebDAVKey)
 	s.handler = s.observeHTTP(s.security(m))
 	return s
 }
@@ -307,14 +325,14 @@ func (w *metricResponseWriter) Push(target string, opts *http.PushOptions) error
 	}
 	return http.ErrNotSupported
 }
-func (s *CatalogServer) Handler() http.Handler                       { return s.handler }
-func (s *CatalogServer) SetPatchManager(manager *patcher.Manager)    { s.patches = manager }
+func (s *CatalogServer) Handler() http.Handler                            { return s.handler }
+func (s *CatalogServer) SetPatchManager(manager *patcher.Manager)         { s.patches = manager }
 func (s *CatalogServer) SetRandomizerManager(manager *randomizer.Manager) { s.randomizer = manager }
-func (s *CatalogServer) SetDecryptor(manager *decryptor.Manager)     { s.decryptor = manager }
-func (s *CatalogServer) SetMediaDirectory(path string)               { s.mediaDir = path }
-func (s *CatalogServer) SetRemoteManager(manager *remotelib.Manager) { s.remote = manager }
-func (s *CatalogServer) SetPokemonClient(client *pokemon.Client)     { s.pokemon = client }
-func (s *CatalogServer) SetPokemonVault(v pokemonvault.Vault)        { s.pokemonFiles = v }
+func (s *CatalogServer) SetDecryptor(manager *decryptor.Manager)          { s.decryptor = manager }
+func (s *CatalogServer) SetMediaDirectory(path string)                    { s.mediaDir = path }
+func (s *CatalogServer) SetRemoteManager(manager *remotelib.Manager)      { s.remote = manager }
+func (s *CatalogServer) SetPokemonClient(client *pokemon.Client)          { s.pokemon = client }
+func (s *CatalogServer) SetPokemonVault(v pokemonvault.Vault)             { s.pokemonFiles = v }
 func (s *CatalogServer) SetConverter(convert func(context.Context, string, func(string, int64, int64)) error) {
 	s.convert = convert
 }
@@ -357,7 +375,8 @@ func (s *CatalogServer) SetupStage() string {
 	}
 	return "preparing catalog"
 }
-func (s *CatalogServer) SetIGDBEnabled(enabled bool) { s.igdbEnabled = enabled }
+func (s *CatalogServer) SetIGDBEnabled(enabled bool)   { s.igdbEnabled = enabled }
+func (s *CatalogServer) SetWebDAVEnabled(enabled bool) { s.webdavEnabled = enabled }
 
 // SetConfig wires the loaded configuration and the directory it came from,
 // for the Settings panel: it renders cfg's ini-backed fields and, on save,

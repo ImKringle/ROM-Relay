@@ -170,6 +170,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	})
 	ui.SetConfig(cfg, configDir)
 	ui.SetIGDBEnabled(cfg.Metadata.IGDB.Enabled)
+	ui.SetWebDAVEnabled(cfg.WebDAV.Enabled)
 	ui.SetMediaDirectory(cfg.Metadata.Libretro.ThumbnailDirectory)
 	ui.SetUploadResultsDir(uploadResultsDir)
 	if cfg.PokemonSidecarURL != "" {

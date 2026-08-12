@@ -75,6 +75,17 @@ type Patching struct {
 	TimeoutSeconds   int    `json:"timeout_seconds"`
 }
 
+// WebDAV gates the read-only /webdav/ catalog listing that lets a client
+// like a phone emulator's "cloud drive" import browse and download ROMs.
+// Off by default: an admin opts in, the same posture RemoteSearch takes for
+// another integration surface that reaches past the normal browser UI.
+// Access itself is still gated per-user by a self-service WebDAV key
+// (Account > WebDAV Access) regardless of this flag; this only controls
+// whether the route exists at all.
+type WebDAV struct {
+	Enabled bool `json:"enabled"`
+}
+
 // Randomizer has no Enabled flag: unlike Patching (self-contained), it's
 // useless without RandomizerSidecarURL, so that URL's presence is the on/off
 // switch, the same convention PokemonSidecarURL/NDecryptSidecarURL already use.
@@ -98,6 +109,7 @@ type Config struct {
 	RemoteSearch             RemoteSearch `json:"remote_search"`
 	Patching                 Patching     `json:"patching"`
 	Randomizer               Randomizer   `json:"randomizer"`
+	WebDAV                   WebDAV       `json:"webdav"`
 
 	// PokemonSidecarURL is the base URL of the PKHeX save-parsing sidecar. When
 	// empty, Pokémon save ingestion and the Living Dex are disabled.
@@ -212,6 +224,8 @@ func Load(dir string) (Config, error) {
 			c.RemoteSearch.PlatformDirectories[platform] = directory
 		}
 	}
+
+	c.WebDAV.Enabled = r.boolean("webdav", "enabled")
 
 	c.SaveDirectory = r.str("storage", "save_directory")
 

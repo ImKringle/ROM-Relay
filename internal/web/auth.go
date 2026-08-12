@@ -105,6 +105,26 @@ func (s *CatalogServer) resolveAPIKeyUser(r *http.Request) *catalog.User {
 	return &u
 }
 
+// resolveWebDAVUser reads the password half of an `Authorization: Basic`
+// header as a WebDAV key and returns the user it was issued to, if the key
+// is still valid. The username half is never checked: the token is the only
+// secret that matters, the same convention the API-key bearer path uses for
+// its header. This is deliberately the only credential /webdav/ accepts -
+// never the session cookie, the account password, the viewer token, or the
+// API-key bearer token - so a leaked WebDAV key exposes only a revocable,
+// read-only view of the catalog and nothing else.
+func (s *CatalogServer) resolveWebDAVUser(r *http.Request) *catalog.User {
+	_, password, ok := r.BasicAuth()
+	if !ok || password == "" {
+		return nil
+	}
+	u, err := s.store.WebDAVKeyUser(r.Context(), password)
+	if err != nil {
+		return nil
+	}
+	return &u
+}
+
 // isMachinePath reports the handheld/download routes that authenticate with the
 // viewer token in the URL. These are fetched by a 3DS or by FBI after scanning a
 // QR code, neither of which can hold a login session.
@@ -158,6 +178,25 @@ func (s *CatalogServer) security(next http.Handler) http.Handler {
 			ctx := context.WithValue(r.Context(), userContextKey{}, user)
 			ctx = context.WithValue(ctx, apiKeyContextKey{}, true)
 			r = r.WithContext(ctx)
+		}
+		// /webdav/ is a machine route for a different kind of client: one that
+		// only ever speaks HTTP Basic Auth, never holds a cookie session, and
+		// was never issued a viewer token or API key. It gets its own gate,
+		// entirely separate from the checks below, and never falls through to
+		// the session-cookie or login-redirect logic those serve.
+		if strings.HasPrefix(r.URL.Path, "/webdav/") {
+			if !s.webdavEnabled {
+				http.Error(w, "WebDAV access is not enabled on this relay", http.StatusServiceUnavailable)
+				return
+			}
+			user := s.resolveWebDAVUser(r)
+			if user == nil {
+				w.Header().Set("WWW-Authenticate", `Basic realm="ROM Relay"`)
+				http.Error(w, "invalid or missing WebDAV credentials", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
+			return
 		}
 		if isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)

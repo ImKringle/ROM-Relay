@@ -220,6 +220,11 @@ pokemon_count INTEGER NOT NULL DEFAULT 0)`,
 id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
 created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 created_at BIGINT NOT NULL, last_used_at BIGINT, revoked_at BIGINT)`,
+	`CREATE TABLE IF NOT EXISTS webdav_keys(
+id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+label TEXT NOT NULL DEFAULT '', token TEXT NOT NULL UNIQUE,
+created_at BIGINT NOT NULL, last_used_at BIGINT, revoked_at BIGINT)`,
+	`CREATE INDEX IF NOT EXISTS webdav_keys_user ON webdav_keys(user_id)`,
 }
 
 // migratePostgres creates the complete Postgres schema. It is idempotent

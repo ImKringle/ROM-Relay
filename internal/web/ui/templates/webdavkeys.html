@@ -1,0 +1,66 @@
+{{define "webdavkeys"}}{{template "base" .}}{{end}}
+
+{{define "title"}}WebDAV Access{{end}}
+
+{{define "content"}}
+<div class="mx-auto grid max-w-5xl gap-5" data-webdavkeys>
+
+  <section class="hero p-[clamp(18px,3.5vw,32px)]">
+    <span class="eyebrow">Import from a device</span>
+    <h1 class="m-0 mt-1 text-[clamp(1.5rem,4vw,2.2rem)]">WebDAV Access</h1>
+    <p class="m-0 mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+      Add ROM Relay as a WebDAV drive in an emulator that supports one (for example, ManicEMU's Import &gt;
+      Add Service &gt; WebDAV), and browse straight into your library instead of downloading and re-importing
+      by hand. A key here only ever grants read-only access to the catalog, never your account password or
+      anything else.
+    </p>
+  </section>
+
+  {{/* A created key's token exists in readable form exactly once, in this
+       response. It gets its own region rather than a line in the list,
+       because the token has to be copied before doing anything else. */}}
+  <section class="surface hidden border-[var(--color-accent)] p-5" id="new-key" aria-live="assertive">
+    <span class="eyebrow">Shown once</span>
+    <h2 class="mb-1 mt-1 text-lg" id="new-key-title">New WebDAV key</h2>
+    <p class="m-0 text-sm text-[var(--color-muted)]" id="new-key-detail"></p>
+    <div class="mt-3 grid gap-2">
+      <label class="text-sm font-semibold">Password (paste this into the app)</label>
+      <div class="flex flex-wrap items-center gap-2">
+        <code class="flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3 font-mono text-base break-all" id="new-key-value"></code>
+        <button class="button button--primary" type="button" data-copy-key>Copy</button>
+      </div>
+      <label class="mt-2 text-sm font-semibold">Server URL</label>
+      <div class="flex flex-wrap items-center gap-2">
+        <code class="flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-well)] p-3 font-mono text-sm break-all" id="new-key-url"></code>
+        <button class="button" type="button" data-copy-url>Copy</button>
+      </div>
+    </div>
+    <p class="mt-3 mb-0 text-sm text-[var(--color-muted)]">
+      Username can be anything; only this password is checked. ROM Relay stores only the token itself for
+      lookup, not a separate secret, but it is never shown again here. If it is lost, revoke it and create a
+      new one.
+    </p>
+    <button class="button mt-3" type="button" data-dismiss-key>Done</button>
+  </section>
+
+  <section class="surface p-5" id="create-key">
+    <span class="eyebrow">New key</span>
+    <h2 class="mb-3 mt-1 text-lg">Create a WebDAV key</h2>
+    <form class="grid items-end gap-3.5 sm:grid-cols-[minmax(0,1fr)_auto]" id="create-key-form">
+      <label class="grid gap-1.5">
+        <span class="text-sm font-semibold">Label</span>
+        <input class="field" name="label" maxlength="128" autocomplete="off"
+               placeholder="My phone's emulator">
+        <small class="text-[var(--color-muted)]">Something that reminds you what uses this key.</small>
+      </label>
+      <button class="button button--primary justify-center" type="submit">Create key</button>
+    </form>
+    <p class="mt-2 mb-0 hidden text-sm text-[var(--color-danger)]" id="create-key-error" role="alert"></p>
+  </section>
+
+  <section class="grid gap-3" id="keys-list" aria-live="polite">
+    <p class="text-sm text-[var(--color-muted)]">Loading keys…</p>
+  </section>
+
+</div>
+{{end}}

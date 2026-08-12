@@ -113,6 +113,11 @@ var tools = []Tool{
 		Icon:        "M5 4h11l3 3v13H5Z M8 4v6h7V4 M8 20v-6h8v6",
 	},
 	{
+		ID: "webdav", Name: "WebDAV Access", Route: "/account/webdav", Requires: AccessUser,
+		Description: "Mint a key so a device (like a phone emulator's cloud-drive import) can browse and download from your library directly.",
+		Icon:        "M4 17a4 4 0 0 1 1-7.9 5 5 0 0 1 9.6-1.7A4.5 4.5 0 0 1 19 16 M8 21h8 M12 21v-6",
+	},
+	{
 		ID: "patches", Name: "ROM Patcher", Route: "/patches", Requires: AccessPublic,
 		Description: "Apply a patch to a ROM you own.",
 		Icon:        "m14 4 6 6-9.5 9.5a2.1 2.1 0 0 1-3 0l-3-3a2.1 2.1 0 0 1 0-3Z M12 6l6 6",

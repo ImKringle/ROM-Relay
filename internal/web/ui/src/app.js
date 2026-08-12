@@ -19,6 +19,7 @@ import { wireTypeChart } from "./typechart.js";
 import { wireSetup } from "./setup.js";
 import { wireUsers } from "./users.js";
 import { wireAPIKeys } from "./apikeys.js";
+import { wireWebDAVKeys } from "./webdavkeys.js";
 import { wireRoms } from "./roms.js";
 import { wirePlayers } from "./players.js";
 import { wireSettings } from "./settings.js";
@@ -125,6 +126,7 @@ function start() {
   wireShutdown();
   wireUsers();
   wireAPIKeys();
+  wireWebDAVKeys();
   wireRoms();
   wirePlayers();
   wireSettings();

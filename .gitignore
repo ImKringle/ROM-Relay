@@ -4,6 +4,7 @@ internal/drivers/3ds/*.bin
 /.env
 /.claude/
 /.ua/
+./context/
 
 # Users' uploaded game saves
 /storage/
