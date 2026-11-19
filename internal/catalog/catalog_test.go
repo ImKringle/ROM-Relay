@@ -454,3 +454,49 @@ func TestRetentionCleanupAndActiveDownloadDeferral(t *testing.T) {
 		t.Fatalf("rows remain: %+v", games)
 	}
 }
+
+// TestExpireNewUnderOnlyTouchesItsRoot covers torrent grabs: unretained files
+// under the torrent root get an expiry and are pruned; retained ones, and
+// external files under a different root, are left alone.
+func TestExpireNewUnderOnlyTouchesItsRoot(t *testing.T) {
+	d := t.TempDir()
+	root := filepath.Join(d, "platforms")
+	torrentRoot := filepath.Join(root, "external", "torrent")
+	other := filepath.Join(root, "external", "antisocial-expert")
+	s, err := Open(filepath.Join(d, "db.sqlite"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.AddExternalArtifactRoot(torrentRoot)
+	s.AddExternalArtifactRoot(other)
+	ctx := context.Background()
+	write := func(p string) string {
+		os.MkdirAll(filepath.Dir(p), 0755)
+		os.WriteFile(p, make([]byte, 32), 0600)
+		return p
+	}
+	temp := write(filepath.Join(torrentRoot, "gba", "temp.gba"))
+	kept := write(filepath.Join(torrentRoot, "gba", "kept.gba"))
+	foreign := write(filepath.Join(other, "gba", "foreign.gba"))
+	if err = s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.MarkArtifactRetention(ctx, kept, true, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ExpireNewUnder(ctx, torrentRoot, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, _, failures := s.CleanupExpired(ctx); deleted != 1 || len(failures) > 0 {
+		t.Fatalf("cleanup=%d %v", deleted, failures)
+	}
+	if _, err = os.Stat(temp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unretained torrent grab must be pruned")
+	}
+	for _, p := range []string{kept, foreign} {
+		if _, err = os.Stat(p); err != nil {
+			t.Fatalf("%s must survive: %v", p, err)
+		}
+	}
+}

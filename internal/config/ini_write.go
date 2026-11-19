@@ -86,6 +86,14 @@ func WriteINI(dir string, c Config) error {
 		}
 		section(&b, "remote_search.platforms", rows)
 	}
+	section(&b, "torrent", []kv{
+		{"enabled", boolStr(c.Torrent.Enabled)},
+		{"qbittorrent_url", c.Torrent.QBittorrentURL},
+		{"qbittorrent_path", c.Torrent.QBittorrentPath},
+		{"username", c.Torrent.Username},
+		{"save_path", c.Torrent.SavePath},
+		{"directory", relOrAbs(dir, c.Torrent.Directory)},
+	})
 	section(&b, "storage", []kv{
 		{"save_directory", relOrAbs(dir, c.SaveDirectory)},
 	})

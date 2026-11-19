@@ -14,3 +14,6 @@ config.ini.backup-*
 .env
 internal/drivers/3ds/*.bin
 internal/drivers/cia-3ds-decryptor/*.exe
+# Author-time UI tooling (the built UI is committed under internal/web/spa/dist).
+node_modules/
+web/node_modules/

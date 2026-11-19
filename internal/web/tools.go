@@ -29,13 +29,13 @@ const (
 // child, and a group with several as a dropdown, so a group started for
 // future siblings costs nothing until it actually has more than one.
 type Tool struct {
-	ID          string
-	Name        string
-	Description string
-	Icon        string
-	Route       string
-	Requires    Access
-	Children    []Tool
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+	Route       string `json:"route,omitempty"`
+	Requires    Access `json:"-"`
+	Children    []Tool `json:"children,omitempty"`
 }
 
 // ActiveFor reports whether the current request path is inside this tool,
@@ -69,6 +69,11 @@ var tools = []Tool{
 		ID: "library", Name: "Library", Route: "/", Requires: AccessPublic,
 		Description: "Browse and download your ROM collection.",
 		Icon:        "M7 8h10a4 4 0 0 1 3.8 5.2l-1 3A2.6 2.6 0 0 1 15.5 17l-1.2-1.3H9.7L8.5 17a2.6 2.6 0 0 1-4.3-.8l-1-3A4 4 0 0 1 7 8Z M7 12h4 M9 10v4",
+	},
+	{
+		ID: "torrents", Name: "Torrents", Route: "/torrents", Requires: AccessUser,
+		Description: "Browse the admin's torrent sources and grab single games into the library.",
+		Icon:        "M12 3v12 M7 10l5 5 5-5 M5 21h14",
 	},
 	{
 		ID: "pokemon-tools", Name: "Pokémon Tools", Requires: AccessUser,

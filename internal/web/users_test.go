@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,7 +28,7 @@ func (f *saveVaultFixture) adminClient(t *testing.T, username string) *http.Clie
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &http.Client{Jar: &sessionJar{cookie: &http.Cookie{Name: sessionCookie, Value: token}}}
+	return &http.Client{Jar: &sessionJar{cookie: &http.Cookie{Name: sessionCookie, Value: token}}, Transport: csrfTransport{}}
 }
 
 // post sends a form to an admin route with the CSRF token attached.
@@ -69,15 +68,10 @@ func TestCreatingAUserReturnsATemporaryPasswordThatWorksOnce(t *testing.T) {
 	}
 
 	// The password must actually let the new user in.
-	form := url.Values{"username": {"misty"}, "password": {created.TempPassword}}
-	login, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).
-		PostForm(f.server.URL+"/login", form)
-	if err != nil {
-		t.Fatal(err)
-	}
+	login := sendJSON(t, http.DefaultClient, http.MethodPost, f.server.URL+"/api/session", map[string]string{"username": "misty", "password": created.TempPassword}, "")
 	defer login.Body.Close()
-	if login.StatusCode != http.StatusSeeOther {
-		t.Fatalf("the temporary password must work at the login page: got %d", login.StatusCode)
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("the temporary password must sign in: got %d", login.StatusCode)
 	}
 
 	user, err := f.store.UserByUsername(context.Background(), "misty")
@@ -145,17 +139,17 @@ func TestTheUsersScreenIsAdminOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("an admin must reach the users screen: got %d", res.StatusCode)
 	}
-	// The list itself is filled from the API by the bundle; what the page must
-	// carry is the create form and the shell that wires it.
-	for _, required := range []string{`id="create-user-form"`, `name="username"`, `name="role"`, `id="users-list"`, `src="/assets/app.js"`} {
-		if !strings.Contains(string(body), required) {
-			t.Errorf("the users screen is missing %q", required)
-		}
+	list, err := plain.Get(f.server.URL + "/api/admin/users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list.Body.Close()
+	if list.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a plain user must not list users: got %d", list.StatusCode)
 	}
 }
 

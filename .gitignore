@@ -8,10 +8,12 @@ internal/drivers/3ds/*.bin
 
 # Users' uploaded game saves
 /storage/
-# Author-time UI tooling. internal/web/ui/dist IS committed on purpose: it is
-# what lets go build and Build-Release.bat work with no Node installed.
+# Author-time UI tooling. The React build (internal/web/spa/dist) IS committed
+# on purpose: it is what lets go build and the Docker image work with no Node.
 /node_modules/
+/web/node_modules/
 /sidecar/**/bin/
 /sidecar/**/obj/
 /dist/
 /build/
+/torrents/

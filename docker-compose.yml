@@ -69,6 +69,39 @@ services:
     expose:
       - "8083"
 
+  # qBittorrent sidecar for Admin > Torrent Sources / the Torrents page.
+  # Reachable only on the internal compose network, never published, so its
+  # Web UI skips auth for those clients (sidecar/qbittorrent/qBittorrent.conf),
+  # the same trust model as the sidecars above. It shares the ROM library
+  # mount at the same path as the app, so save paths need no translation.
+  # ROM Relay keeps it leech-only: zero share ratio, and each torrent removed
+  # (files kept) the moment its file finishes. The peer port below is
+  # published so other peers can connect in, which is what makes downloads
+  # fast; forward it on your router. That port reaches only qBittorrent's
+  # peer listener. Its Web UI/API is never published, and it sits on its own
+  # `torrent` network shared only with romrelay, so no other container in the
+  # stack (db, sidecars) can reach the API either.
+  qbittorrent:
+    build:
+      context: ./sidecar/qbittorrent
+    restart: unless-stopped
+    environment:
+      QBT_LEGAL_NOTICE: confirm
+      QBT_TORRENTING_PORT: ${QBT_TORRENTING_PORT:-6881}
+      # Same uid as the app container (root), so both can write the library.
+      PUID: "0"
+      PGID: "0"
+    volumes:
+      - "${ROMS_DIR:-./data/roms}:/app/data/roms"
+      - romrelay-qbittorrent:/config
+    networks:
+      - torrent
+    expose:
+      - "8080"
+    ports:
+      - "${QBT_TORRENTING_PORT:-6881}:${QBT_TORRENTING_PORT:-6881}/tcp"
+      - "${QBT_TORRENTING_PORT:-6881}:${QBT_TORRENTING_PORT:-6881}/udp"
+
   romrelay:
     build:
       context: .
@@ -82,6 +115,8 @@ services:
       ndecrypt:
         condition: service_started
       randomizer:
+        condition: service_started
+      qbittorrent:
         condition: service_started
     # App secrets (tokens, IGDB, SFTP password) are passed straight into the
     # container environment, where ROM Relay reads them at runtime.
@@ -98,11 +133,17 @@ services:
       NDECRYPT_SIDECAR_URL: http://ndecrypt:8082
       # Where the Go app reaches the randomizer sidecar.
       RANDOMIZER_SIDECAR_URL: http://randomizer:8083
+      # Where the Go app reaches the qBittorrent sidecar. Setting it also
+      # switches torrents on.
+      QBITTORRENT_URL: http://qbittorrent:8080
       # The address to advertise in catalog/QR/download URLs. Behind the
       # Cloudflare Tunnel, set PUBLIC_BASE_URL to the tunnel hostname in
       # .env, e.g. PUBLIC_BASE_URL=https://romrelay.kringleslab.dev
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ADVERTISE_IP: ${ADVERTISE_IP:-}
+    networks:
+      - default
+      - torrent
     ports:
       - "${HTTP_PORT:-8080}:8080"
     volumes:
@@ -125,6 +166,11 @@ services:
       # Users' uploaded game saves. Back this up: it is not in the database.
       - romrelay-storage:/app/data/storage
 
+networks:
+  # qBittorrent <-> romrelay only. Not `internal`: qBittorrent needs outbound
+  # internet access to reach peers.
+  torrent: {}
+
 volumes:
   pgdata:
     name: romrelay-postgres-data
@@ -138,3 +184,5 @@ volumes:
     name: romrelay-patches
   romrelay-randomized:
     name: romrelay-randomized
+  romrelay-qbittorrent:
+    name: romrelay-qbittorrent

@@ -767,81 +767,6 @@ func sortStrings(s []string) {
 	}
 }
 
-// typeChartCell is one attacker/defender pairing's damage multiplier,
-// pre-rendered into a CSS class and a short label, html/template has no
-// float comparison, so the classification happens once here rather than in
-// the template for every one of the 324 cells.
-type typeChartCell struct {
-	Class string
-	Label string
-}
-
-type typeChartRow struct {
-	Type  string
-	Cells []typeChartCell
-}
-
-func classifyMultiplier(m float64) (class, label string) {
-	switch m {
-	case 0:
-		return "mx0", "0×"
-	case 0.25:
-		return "mx25", "¼×"
-	case 0.5:
-		return "mx50", "½×"
-	case 2:
-		return "mx200", "2×"
-	case 4:
-		return "mx400", "4×"
-	default:
-		return "mx100", ""
-	}
-}
-
-// typeChartPageData is the full 18×18 attacker/defender reference table:
-// rows are defending types, columns (in the same AllTypes order) are
-// attacking types, the standard type-chart layout, computed once per
-// request from the same catalog.TypeMatchups a single species' matchup
-// panel already uses, one defending type at a time.
-type typeChartPageData struct {
-	pageData
-	AttackTypes []string
-	Rows        []typeChartRow
-}
-
-// typeChartPage serves the standalone type-effectiveness reference: the same
-// data the Pokédex species panel's "Type Matchups" chapter shows for one
-// species, but every type against every other, with no species required.
-func (s *CatalogServer) typeChartPage(w http.ResponseWriter, r *http.Request) {
-	rows := make([]typeChartRow, len(catalog.AllTypes))
-	for i, defend := range catalog.AllTypes {
-		matchups := catalog.TypeMatchups(defend)
-		cells := make([]typeChartCell, len(catalog.AllTypes))
-		for j, attack := range catalog.AllTypes {
-			class, label := classifyMultiplier(matchups[attack])
-			cells[j] = typeChartCell{Class: class, Label: label}
-		}
-		rows[i] = typeChartRow{Type: defend, Cells: cells}
-	}
-	s.render(w, "typechart", "typechart", typeChartPageData{
-		pageData: s.newPageData(r), AttackTypes: catalog.AllTypes, Rows: rows,
-	})
-}
-
-// pokedexPage serves the Pokédex grid. It's filled by the client from
-// /api/dex, 1,025 sprites is a lot of markup to send on every visit for a
-// view that changes only when a save is uploaded.
-func (s *CatalogServer) pokedexPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "pokedex", "pokedex", s.newPageData(r))
-}
-
-// trainersPage serves the trainer roster: one card per playthrough, built
-// from the saves you upload. Split out of the Pokédex page so a game in
-// progress is one page, not a tab. Filled by the client from /api/userdex.
-func (s *CatalogServer) trainersPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "trainers", "trainers", s.newPageData(r))
-}
-
 // redirectTo permanently forwards a retired route, keeping any viewer token.
 func redirectTo(target string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -860,4 +785,19 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// apiTypeChart is the type chart as data for the React UI: for each
+// defending type, the multiplier each attacking type deals.
+func (s *CatalogServer) apiTypeChart(w http.ResponseWriter, r *http.Request) {
+	rows := make([]map[string]any, len(catalog.AllTypes))
+	for i, defend := range catalog.AllTypes {
+		m := catalog.TypeMatchups(defend)
+		mults := make([]float64, len(catalog.AllTypes))
+		for j, attack := range catalog.AllTypes {
+			mults[j] = m[attack]
+		}
+		rows[i] = map[string]any{"type": defend, "mults": mults}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"types": catalog.AllTypes, "rows": rows})
 }

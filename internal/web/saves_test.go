@@ -83,7 +83,7 @@ func (f *saveVaultFixture) signIn(t *testing.T, username string) *http.Client {
 		t.Fatal(err)
 	}
 	jar := &sessionJar{cookie: &http.Cookie{Name: sessionCookie, Value: token}}
-	return &http.Client{Jar: jar}
+	return &http.Client{Jar: jar, Transport: csrfTransport{}}
 }
 
 func (f *saveVaultFixture) upload(t *testing.T, client *http.Client, gameID, fileName string, data []byte) *http.Response {
@@ -798,7 +798,7 @@ func TestASignedInUserCanDownloadWithoutTheViewerTokenInTheURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Jar: &sessionJar{cookie: &http.Cookie{Name: sessionCookie, Value: session}}}
+	client := &http.Client{Jar: &sessionJar{cookie: &http.Cookie{Name: sessionCookie, Value: session}}, Transport: csrfTransport{}}
 
 	for _, path := range []string{"/d/" + id, "/healthz"} {
 		res, err := client.Get(server.URL + path)

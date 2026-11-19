@@ -1050,6 +1050,54 @@ func (s *Store) MarkArtifactRetention(ctx context.Context, path string, retain b
 	_, err := s.execCtx(ctx, `UPDATE artifacts SET retain=?,expires_at=? WHERE path=? AND (patched=TRUE OR external=TRUE)`, retain, value, path)
 	return err
 }
+
+// ExternalArtifactsUnder lists external artifacts whose file lives under root.
+// The prefix match is done here rather than in SQL so path separators and
+// LIKE metacharacters in file names need no escaping.
+func (s *Store) ExternalArtifactsUnder(ctx context.Context, root string) ([]Artifact, error) {
+	rows, err := s.queryCtx(ctx, `SELECT id,platform,name,path,expires_at,retain FROM artifacts WHERE external=TRUE ORDER BY lower(name)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	prefix := filepath.Clean(root) + string(filepath.Separator)
+	var out []Artifact
+	for rows.Next() {
+		var a Artifact
+		var expires sql.NullInt64
+		if err := rows.Scan(&a.ID, &a.Platform, &a.Name, &a.Path, &expires, &a.Retain); err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(a.Path, prefix) {
+			continue
+		}
+		if expires.Valid {
+			v := time.Unix(expires.Int64, 0)
+			a.ExpiresAt = &v
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ExpireNewUnder gives every unretained external artifact under root that has
+// no expiry yet one at expires, so CleanupExpired will prune it.
+func (s *Store) ExpireNewUnder(ctx context.Context, root string, expires time.Time) error {
+	list, err := s.ExternalArtifactsUnder(ctx, root)
+	if err != nil {
+		return err
+	}
+	for _, a := range list {
+		if a.Retain || a.ExpiresAt != nil {
+			continue
+		}
+		if _, err := s.execCtx(ctx, `UPDATE artifacts SET expires_at=? WHERE id=? AND expires_at IS NULL AND retain=FALSE`, expires.Unix(), a.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) BeginDownload(id string) func() {
 	s.activeMu.Lock()
 	s.active[id]++

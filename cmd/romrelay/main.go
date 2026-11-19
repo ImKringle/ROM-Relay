@@ -33,8 +33,10 @@ import (
 	"romrelay/internal/presentation"
 	"romrelay/internal/randomizer"
 	remotelib "romrelay/internal/remote"
+	"romrelay/internal/romm"
 	"romrelay/internal/savevault"
 	"romrelay/internal/threedscrypt"
+	"romrelay/internal/torrent"
 	webui "romrelay/internal/web"
 )
 
@@ -121,6 +123,15 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	store.AddArtifactRoot(cfg.Randomizer.OutputDirectory)
 	externalRoot := filepath.Join(cfg.LibraryDirectory, "external", "antisocial-expert")
 	store.AddExternalArtifactRoot(externalRoot)
+	if cfg.Torrent.Enabled {
+		// Torrent grabs not marked "retain" land here and expire like patch
+		// output; registered before the first scan so they are catalogued.
+		store.AddExternalArtifactRoot(torrent.TempRoot(cfg.LibraryDirectory))
+	}
+	rommOn := cfg.Romm.URL != "" && cfg.Romm.Token != ""
+	if rommOn {
+		store.AddExternalArtifactRoot(webui.RommTempRoot(cfg.LibraryDirectory))
+	}
 	// Results from the Game Library's ad-hoc convert/encrypt/decrypt uploads:
 	// a normal, temporary (expiring-unless-retained) artifact root, the same
 	// shape a patch job's output already is.
@@ -249,11 +260,43 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		remoteManager = remotelib.New(store, remotelib.Options{Host: cfg.RemoteSearch.Host, Port: cfg.RemoteSearch.Port, Username: cfg.RemoteSearch.Username, Password: cfg.RemoteSearch.Password, Root: cfg.RemoteSearch.RootDirectory, HostKeySHA256: cfg.RemoteSearch.HostKeySHA256, MaxResults: cfg.RemoteSearch.MaxResults, MaxFileBytes: int64(cfg.RemoteSearch.MaxFileSizeMB) << 20, PlatformDirectories: cfg.RemoteSearch.PlatformDirectories, LibraryRoot: cfg.LibraryDirectory, ExternalRoot: externalRoot, Retention: 24 * time.Hour})
 		ui.SetRemoteManager(remoteManager)
 	}
+	// Torrents: an external qBittorrent when a URL is configured (the Docker
+	// sidecar), otherwise a private one ROM Relay starts and stops itself.
+	var managedQBT *torrent.Managed
+	if cfg.Torrent.Enabled {
+		var client *torrent.Client
+		if cfg.Torrent.QBittorrentURL != "" {
+			client = torrent.NewClient(cfg.Torrent.QBittorrentURL, cfg.Torrent.Username, cfg.Torrent.Password)
+		} else if bin := torrent.FindBinary(cfg.Torrent.QBittorrentPath); bin == "" {
+			present.Warning("Torrents disabled: install qbittorrent-nox or set [torrent] qbittorrent_path / qbittorrent_url", "Torrent field fallow: plant qbittorrent-nox or set [torrent] qbittorrent_path / qbittorrent_url")
+		} else if managedQBT, err = torrent.Launch(context.Background(), bin, filepath.Join(cfg.Torrent.Directory, ".qbittorrent")); err != nil {
+			present.Warning("Torrents disabled: could not start qBittorrent: %v", "Torrent field fallow: qBittorrent would not sprout: %v", err)
+		} else {
+			client = managedQBT.Client
+			present.Info("qBittorrent started for torrent grabs at %s", "qBittorrent sprouted for torrent grabs at %s", managedQBT.URL)
+		}
+		if client != nil {
+			savePath := cfg.Torrent.SavePath
+			if savePath == "" {
+				savePath = cfg.LibraryDirectory
+			}
+			ui.SetTorrent(client, cfg.Torrent.Directory, cfg.LibraryDirectory, savePath)
+		}
+	}
+	var rommClient *romm.Client
+	if rommOn {
+		rommClient = romm.New(cfg.Romm.URL, cfg.Romm.Token, filepath.Join(cfg.LibraryDirectory, ".romm", "listing.json"))
+		ui.SetRomm(rommClient, cfg.LibraryDirectory)
+	}
 	var libretroProvider *metadata.Libretro
 	if cfg.Metadata.Libretro.Enabled {
 		libretroProvider = metadata.NewLibretro(store, metadata.LibretroOptions{DatabaseDirectory: cfg.Metadata.Libretro.DatabaseDirectory, ThumbnailDirectory: cfg.Metadata.Libretro.ThumbnailDirectory, AutoUpdate: cfg.Metadata.Libretro.AutoUpdate, DownloadThumbnails: cfg.Metadata.Libretro.DownloadThumbnails, ROMProgress: reportROMMetadata, Progress: func(stage string, done, total int) {
 			ui.SetBackground("metadata", webui.BackgroundJob{Active: true, Message: "Libretro " + stage, Done: int64(done), Total: int64(total)})
 		}})
+	}
+	var rommProvider *metadata.RomM
+	if rommClient != nil {
+		rommProvider = metadata.NewRomM(store, rommClient, cfg.Metadata.Libretro.ThumbnailDirectory)
 	}
 	var igdbProvider *metadata.IGDB
 	if cfg.Metadata.IGDB.Enabled {
@@ -482,6 +525,15 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 				_ = store.SetSchedulerState(context.Background(), "libretro_exact_name_match_v1", time.Now(), "complete")
 			}
 		}
+		if rommProvider != nil && ctx.Err() == nil {
+			ui.SetBackground("metadata", webui.BackgroundJob{Active: true, Message: "RomM matching"})
+			updated, enrichErr := rommProvider.Enrich(ctx, staleBefore)
+			if enrichErr != nil && ctx.Err() == nil {
+				present.Warning("RomM enrichment will retry: %v", "RomM labels will sprout again: %v", enrichErr)
+			} else if updated > 0 {
+				present.Success("RomM enriched %d games", "RomM dressed %d ears", updated)
+			}
+		}
 		if igdbProvider != nil {
 			if ctx.Err() != nil {
 				return
@@ -541,6 +593,15 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 				lastTotal, float64(lastBytes)/(1<<30), time.Since(started).Round(time.Millisecond))
 		}
 	}
+	// Torrent grabs write ROMs outside the scan schedule; once the web layer
+	// has catalogued them, hash and enrich them like any new library file
+	// (metadata matching is by hash, so hashing must come first).
+	ui.SetLibraryChanged(func() {
+		go func() {
+			hashPending()
+			refreshMetadata()
+		}()
+	})
 	initialCatalog := make(chan struct{})
 	startWorker(func() {
 		reconcile()
@@ -586,7 +647,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 		}
 		ui.SetBackground("conversion", webui.BackgroundJob{Active: false, Message: "conversion queue complete"})
 	})
-	if libretroProvider != nil || igdbProvider != nil {
+	if libretroProvider != nil || igdbProvider != nil || rommProvider != nil {
 		startWorker(func() {
 			// Metadata matches by content hash, so wait for the background hash
 			// pass rather than the header index.
@@ -598,7 +659,7 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 			refreshMetadata()
 		})
 	}
-	if libretroProvider != nil || igdbProvider != nil {
+	if libretroProvider != nil || igdbProvider != nil || rommProvider != nil {
 		startWorker(func() {
 			// The refresh function performs its own staleness checks. An hourly
 			// wake-up lets interrupted/offline providers recover promptly without
@@ -797,6 +858,9 @@ func runV2(cfg config.Config, present *presentation.Presenter, driverDirectory s
 	}
 	if remoteManager != nil {
 		remoteManager.Shutdown()
+	}
+	if managedQBT != nil {
+		managedQBT.Stop()
 	}
 	workers.Wait()
 	present.Success("Shutdown complete; HTTP, workers, and SQLite are closed", "Corn stand packed; HTTP, workers, and SQLite are closed")

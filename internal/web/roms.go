@@ -9,20 +9,6 @@ import (
 	"strings"
 )
 
-// adminRoms serves the ROM Library management screen. Like the Patch Silo's
-// metadata editor, the list itself is filled client-side from the existing
-// /api/admin/games endpoint, no new listing endpoint needed.
-func (s *CatalogServer) adminRoms(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, "admin authentication required", http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/roms") {
-		return
-	}
-	s.render(w, "adminroms", "adminroms", s.newPageData(r))
-}
-
 // deleteArtifact removes one cataloged file: the file on disk, then a
 // Reconcile so the artifact's row (and its game, if this was the game's last
 // artifact, and that game's artwork) go with it. This is the same sequence

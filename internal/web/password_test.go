@@ -2,10 +2,10 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"testing"
 	"time"
 )
@@ -32,8 +32,28 @@ func browserGet(t *testing.T, client *http.Client, url string) *http.Response {
 func noRedirect(jar http.CookieJar) *http.Client {
 	return &http.Client{
 		Jar:           jar,
+		Transport:     csrfTransport{},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// testCSRF is the CSRF token every fixture's relay issues (they all use the
+// same admin token, and the token is derived from it, see NewCatalog).
+var testCSRF = func() string {
+	sum := sha256.Sum256([]byte("romrelay-csrf\x00" + "admin-token-with-24-characters!"))
+	return hex.EncodeToString(sum[:])
+}()
+
+// csrfTransport sends the CSRF token on every mutation, as the React UI does,
+// so signed-in test clients behave like the real pages.
+type csrfTransport struct{}
+
+func (csrfTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("X-CSRF-Token") == "" {
+		r = r.Clone(r.Context())
+		r.Header.Set("X-CSRF-Token", testCSRF)
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // signInWithTempPassword creates an account carrying an admin-issued temporary
@@ -85,14 +105,10 @@ func TestSettingAPasswordClearsTheForcedChangeAndRestoresBrowsing(t *testing.T) 
 	f := newSaveVaultFixture(t)
 	client := f.signInWithTempPassword(t, "misty")
 
-	form := url.Values{"password": {"a new password"}, "confirm": {"a new password"}}
-	res, err := client.Post(f.server.URL+"/account/password", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := sendJSON(t, client, http.MethodPost, f.server.URL+"/api/account/password", map[string]string{"password": "a new password", "confirm": "a new password"}, f.ui.csrf)
 	res.Body.Close()
-	if res.StatusCode != http.StatusSeeOther {
-		t.Fatalf("setting a password should send the user on their way: got %d", res.StatusCode)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("setting a password should succeed: got %d", res.StatusCode)
 	}
 
 	user, err := f.store.UserByUsername(context.Background(), "misty")
@@ -117,11 +133,7 @@ func TestMismatchedConfirmationDoesNotChangeThePassword(t *testing.T) {
 	f := newSaveVaultFixture(t)
 	client := f.signInWithTempPassword(t, "misty")
 
-	form := url.Values{"password": {"a new password"}, "confirm": {"a different password"}}
-	res, err := client.Post(f.server.URL+"/account/password", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := sendJSON(t, client, http.MethodPost, f.server.URL+"/api/account/password", map[string]string{"password": "a new password", "confirm": "a different password"}, f.ui.csrf)
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a typo in the confirmation must be refused: got %d", res.StatusCode)
@@ -153,10 +165,7 @@ func TestADisabledAccountCannotSignInAndIsNotIdentifiedAsReal(t *testing.T) {
 	}
 
 	client := noRedirect(nil)
-	real, err := client.PostForm(f.server.URL+"/login", url.Values{"username": {"banned"}, "password": {"known password"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	real := sendJSON(t, client, http.MethodPost, f.server.URL+"/api/session", map[string]string{"username": "banned", "password": "known password"}, "")
 	defer real.Body.Close()
 	if real.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("a disabled account must not sign in even with the right password: got %d", real.StatusCode)
@@ -165,10 +174,7 @@ func TestADisabledAccountCannotSignInAndIsNotIdentifiedAsReal(t *testing.T) {
 
 	// The refusal must look exactly like a wrong password: a different message
 	// tells a stranger the account exists.
-	unknown, err := client.PostForm(f.server.URL+"/login", url.Values{"username": {"nobody"}, "password": {"whatever"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	unknown := sendJSON(t, client, http.MethodPost, f.server.URL+"/api/session", map[string]string{"username": "nobody", "password": "whatever"}, "")
 	defer unknown.Body.Close()
 	if body := readBody(t, unknown); body != disabledBody {
 		t.Fatal("a disabled account must be refused with the same message as an unknown one, or it confirms the account is real")

@@ -3,7 +3,6 @@ package web
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -39,7 +38,9 @@ import (
 	"romrelay/internal/randomizer"
 	remotelib "romrelay/internal/remote"
 	"romrelay/internal/savevault"
+	"romrelay/internal/romm"
 	"romrelay/internal/threedscrypt"
+	"romrelay/internal/torrent"
 )
 
 type CatalogServer struct {
@@ -52,6 +53,16 @@ type CatalogServer struct {
 	randomizer           *randomizer.Manager
 	decryptor            *decryptor.Manager
 	remote               *remotelib.Manager
+	torrents             *torrent.Client
+	torrentDir           string
+	torrentLibrary       string
+	libraryChanged       func()
+	torrentIdx           torrentIndex
+	grabLabels           sync.Map // torrent hash -> activity-tray key
+	torrentSavePath      string
+	romm                 *romm.Client
+	logins               loginThrottle
+	rommLibrary          string
 	pokemon              *pokemon.Client
 	saves                savevault.Vault
 	pokemonFiles         pokemonvault.Vault
@@ -129,13 +140,13 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 		LockSystem: webdav.NewMemLS(),
 	}
 	m := http.NewServeMux()
-	m.HandleFunc("GET /", s.index)
-	m.HandleFunc("GET /games/{id}", s.game)
+	m.HandleFunc("GET /", s.spaPage)
+	m.HandleFunc("GET /games/{id}", s.spaPage)
 	m.HandleFunc("GET /api/games", s.apiGames)
 	m.HandleFunc("GET /healthz", s.catalogHealth)
 	m.HandleFunc("GET /d/{id}", s.catalogDownload)
 	m.HandleFunc("HEAD /d/{id}", s.catalogDownload)
-	m.HandleFunc("GET /download/{id}", s.downloadChoice)
+	m.HandleFunc("GET /download/{id}", s.spaPage)
 	m.HandleFunc("GET /qr/{file}", s.catalogQR)
 	m.HandleFunc("GET /qr/fbi/{batch}", s.fbiBatchQR)
 	m.HandleFunc("GET /api/fbi/batches", s.fbiBatches)
@@ -143,7 +154,7 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("POST /queue", s.catalogQueue)
 	m.HandleFunc("POST /api/ftp/browse", s.ftpBrowse)
 	m.HandleFunc("POST /api/ftp/send", s.ftpSend)
-	m.HandleFunc("GET /patches", s.publicPatches)
+	m.HandleFunc("GET /patches", s.spaPage)
 	m.HandleFunc("GET /api/patch-files", s.publicPatchFiles)
 	m.HandleFunc("POST /api/patch-jobs", s.createPublicPatchJob)
 	m.HandleFunc("GET /api/patch-jobs/{id}", s.getPublicPatchJob)
@@ -154,23 +165,39 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("POST /api/library/convert/{id}", s.createConvertFromLibrary)
 	m.HandleFunc("POST /api/library/crypt/{id}", s.createCryptFromLibrary)
 	m.HandleFunc("POST /api/library/upload", s.createLibraryUpload)
-	m.HandleFunc("GET /admin", s.adminHub)
-	m.HandleFunc("GET /admin/roms", s.adminRoms)
+	m.HandleFunc("GET /admin", s.spaPage)
+	m.HandleFunc("GET /admin/roms", s.spaPage)
 	m.HandleFunc("DELETE /api/admin/roms/{id}", s.deleteArtifact)
-	m.HandleFunc("GET /admin/saves", s.adminSaves)
+	m.HandleFunc("GET /admin/saves", s.spaPage)
 	m.HandleFunc("GET /api/admin/users/{id}/saves", s.adminUserSaves)
 	m.HandleFunc("GET /admin/users/{id}/saves/{sid}/download", s.adminDownloadUserSave)
 	m.HandleFunc("DELETE /api/admin/users/{id}/saves/{sid}", s.adminDeleteUserSave)
 	m.HandleFunc("GET /api/admin/users/{id}/dex", s.adminUserDex)
 	m.HandleFunc("GET /api/admin/users/{id}/pokehome", s.adminUserPokehome)
 	m.HandleFunc("DELETE /api/admin/users/{id}/pokehome/{pid}", s.adminDeletePokehomeMon)
-	m.HandleFunc("GET /admin/settings", s.adminSettings)
+	m.HandleFunc("GET /admin/settings", s.spaPage)
+	m.HandleFunc("GET /api/admin/settings", s.apiSettings)
 	m.HandleFunc("POST /api/admin/settings", s.saveSettings)
-	m.HandleFunc("GET /admin/api-keys", s.apiKeysPage)
+	m.HandleFunc("GET /admin/api-keys", s.spaPage)
 	m.HandleFunc("GET /api/admin/api-keys", s.listAPIKeys)
 	m.HandleFunc("POST /api/admin/api-keys", s.createAPIKey)
 	m.HandleFunc("DELETE /api/admin/api-keys/{id}", s.revokeAPIKey)
-	m.HandleFunc("GET /admin/patches", s.adminPatches)
+	m.HandleFunc("GET /admin/torrents", s.spaPage)
+	m.HandleFunc("GET /api/admin/torrents", s.adminTorrents)
+	m.HandleFunc("POST /api/admin/torrents", s.uploadTorrents)
+	m.HandleFunc("DELETE /api/admin/torrents/{name}", s.deleteTorrent)
+	m.HandleFunc("GET /torrents", s.spaPage)
+	m.HandleFunc("GET /api/torrents", s.searchTorrents)
+	m.HandleFunc("POST /api/torrents/grab", s.grabTorrentFile)
+	m.HandleFunc("POST /api/admin/torrents/pending/extract", s.extractPending)
+	m.HandleFunc("POST /api/admin/torrents/pending/delete", s.deletePending)
+	m.HandleFunc("POST /api/admin/torrents/keep/{id}", s.keepTorrentROM)
+	m.HandleFunc("GET /romm", s.spaPage)
+	m.HandleFunc("POST /api/admin/romm/refresh", s.refreshRomm)
+	m.HandleFunc("GET /api/romm/cover/{id}", s.rommCover)
+	m.HandleFunc("POST /api/romm/grab", s.grabRomm)
+	m.HandleFunc("GET /api/romm/shot/{id}/{n}", s.rommShot)
+	m.HandleFunc("GET /admin/patches", s.spaPage)
 	m.HandleFunc("GET /api/admin/patch-files", s.patchFiles)
 	m.HandleFunc("GET /api/admin/games", s.adminGames)
 	m.HandleFunc("POST /api/admin/patch-jobs", s.createPatchJob)
@@ -197,16 +224,16 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("POST /api/pokehome/{id}/deposit", s.depositPokehome)
 	m.HandleFunc("GET /api/pokehome/boxes", s.pokehomeBoxes)
 	m.HandleFunc("POST /api/pokehome/{id}/withdraw", s.withdrawPokehome)
-	m.HandleFunc("GET /pokehome", s.pokehomePage)
+	m.HandleFunc("GET /pokehome", s.spaPage)
 	m.HandleFunc("GET /api/dex", s.apiDex)
 	m.HandleFunc("GET /api/dex/species/{dex}", s.apiSpeciesDetail)
 	m.HandleFunc("GET /api/pokedex-lookup", s.apiPokedexLookup)
 	m.HandleFunc("GET /api/pokedex-lookup/games", s.apiPokedexLookupGames)
-	m.HandleFunc("GET /pokedex", s.pokedexPage)
-	m.HandleFunc("GET /trainers", s.trainersPage)
-	m.HandleFunc("GET /pokedex/types", s.typeChartPage)
-	m.HandleFunc("GET /editor", s.pokemonEditorPage)
-	m.HandleFunc("GET /randomizer", s.randomizerPage)
+	m.HandleFunc("GET /pokedex", s.spaPage)
+	m.HandleFunc("GET /trainers", s.spaPage)
+	m.HandleFunc("GET /pokedex/types", s.spaPage)
+	m.HandleFunc("GET /editor", s.spaPage)
+	m.HandleFunc("GET /randomizer", s.spaPage)
 	m.HandleFunc("POST /api/randomize-jobs", s.createRandomizeJob)
 	m.HandleFunc("GET /api/randomize-jobs/{id}", s.getRandomizeJob)
 	m.HandleFunc("POST /api/randomize-jobs/{id}/retain", s.retainRandomizeJob)
@@ -215,9 +242,8 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("GET /userdex", redirectTo("/trainers"))
 	m.HandleFunc("GET /api/userdex", s.apiUserdex)
 	m.HandleFunc("GET /api/userdex/{id}/dex", s.apiUserdexDex)
-	m.HandleFunc("GET /account/password", s.passwordChangePage)
-	m.HandleFunc("POST /account/password", s.changePassword)
-	m.HandleFunc("GET /admin/users", s.usersPage)
+	m.HandleFunc("GET /account/password", s.spaPage)
+	m.HandleFunc("GET /admin/users", s.spaPage)
 	m.HandleFunc("GET /api/admin/users", s.listUsers)
 	m.HandleFunc("POST /api/admin/users", s.createUser)
 	m.HandleFunc("POST /api/admin/users/{id}/role", s.setUserRole)
@@ -233,13 +259,23 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	m.HandleFunc("POST /api/saves/{id}/game-override", s.setSaveGameOverride)
 	m.HandleFunc("GET /api/saves/{id}/bag", s.getSaveBag)
 	m.HandleFunc("POST /api/saves/{id}/bag", s.setSaveBag)
-	m.HandleFunc("GET /saves", s.savesPage)
+	m.HandleFunc("GET /saves", s.spaPage)
 	m.Handle("GET /sprites/", dex.SpriteHandler())
-	m.HandleFunc("GET /login", s.loginPage)
-	m.HandleFunc("POST /login", s.login)
+	m.HandleFunc("GET /login", s.spaPage)
 	m.HandleFunc("POST /logout", s.logout)
 	m.HandleFunc("GET /logout", s.logout)
 	m.HandleFunc("GET /api/me", s.apiMe)
+	m.HandleFunc("GET /api/session", s.getSession)
+	m.HandleFunc("GET /account", s.spaPage)
+	m.HandleFunc("GET /api/library", s.apiLibrary)
+	m.HandleFunc("GET /api/typechart", s.apiTypeChart)
+	m.HandleFunc("GET /api/admin/overview", s.apiAdminOverview)
+	m.HandleFunc("POST /api/account/password", s.apiChangePassword)
+	m.HandleFunc("GET /api/library/{id}", s.apiGame)
+	m.HandleFunc("GET /api/files/{id}/choice", s.apiDownloadChoice)
+	m.HandleFunc("POST /api/session", s.createSession)
+	m.HandleFunc("DELETE /api/session", s.deleteSession)
+	m.Handle("GET /app-assets/", spaAssets())
 	// One subtree route for everything under dist/, not one line per folder,
 	// the per-folder allowlist this replaced silently 404'd every asset
 	// directory (logo/, gender/, shiny/, typebadges/) added after it was last
@@ -251,7 +287,7 @@ func NewCatalog(store *catalog.Store, base, token, theme, adminToken, patchDir s
 	for _, method := range []string{"GET", "HEAD", "OPTIONS", "PROPFIND", "PROPPATCH", "PUT", "DELETE", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "POST"} {
 		m.HandleFunc(method+" /webdav/", s.serveWebDAV)
 	}
-	m.HandleFunc("GET /account/webdav", s.webdavKeysPage)
+	m.HandleFunc("GET /account/webdav", s.spaPage)
 	m.HandleFunc("GET /api/account/webdav-keys", s.listWebDAVKeys)
 	m.HandleFunc("POST /api/account/webdav-keys", s.createWebDAVKey)
 	m.HandleFunc("DELETE /api/account/webdav-keys/{id}", s.revokeWebDAVKey)
@@ -459,25 +495,6 @@ func (s *CatalogServer) adminOK(r *http.Request) bool {
 	}
 	return s.adminToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.adminToken)) == 1
 }
-func (s *CatalogServer) publicPatches(w http.ResponseWriter, r *http.Request) {
-	if s.patches == nil {
-		http.Error(w, "patch engine unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		http.Error(w, "could not start patch session", 500)
-		return
-	}
-	csrf := hex.EncodeToString(b)
-	http.SetCookie(w, &http.Cookie{Name: "romrelay_patch_csrf", Value: csrf, Path: "/", SameSite: http.SameSiteStrictMode, Secure: strings.HasPrefix(s.base, "https://")})
-	// This page mints its own per-visit token paired with that cookie: the
-	// workspace is open to anyone who can reach the relay, so it must not borrow
-	// the admin CSRF token the rest of pageData carries.
-	data := s.newPageData(r)
-	data.CSRF = csrf
-	s.render(w, "patches", "patches", data)
-}
 func (s *CatalogServer) publicPatchFiles(w http.ResponseWriter, r *http.Request) {
 	if s.patches == nil {
 		http.Error(w, "patch engine unavailable", 503)
@@ -494,6 +511,11 @@ func (s *CatalogServer) publicPatchFiles(w http.ResponseWriter, r *http.Request)
 func (s *CatalogServer) publicPatchCSRFOK(w http.ResponseWriter, r *http.Request) bool {
 	c, err := r.Cookie("romrelay_patch_csrf")
 	provided := r.Header.Get("X-CSRF-Token")
+	// The React UI sends the session's CSRF token (forgeryOK has already
+	// checked it); the old per-visit cookie pair still works for scripts.
+	if provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.csrf)) == 1 {
+		return true
+	}
 	if err != nil || len(c.Value) != 64 || subtle.ConstantTimeCompare([]byte(c.Value), []byte(provided)) != 1 {
 		http.Error(w, "invalid patch session; reload the workspace", http.StatusForbidden)
 		return false
@@ -589,22 +611,6 @@ func (s *CatalogServer) getPublicPatchJob(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(job)
 }
-func (s *CatalogServer) adminPatches(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, s.word("admin authentication required", "the patch silo needs its secret token"), http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/patches") {
-		return
-	}
-	data := adminPage{
-		pageData:     s.newPageData(r),
-		RemoteQuery:  r.URL.Query().Get("remote_q"),
-		HasRemote:    s.remote != nil,
-		HasConverter: s.convert != nil,
-	}
-	s.render(w, "admin", "admin", data)
-}
 
 // adminTokenLanding exchanges an ?admin_token= in the URL for the admin cookie
 // and reloads the page without it, reporting whether it handled the request.
@@ -619,16 +625,6 @@ func (s *CatalogServer) adminTokenLanding(w http.ResponseWriter, r *http.Request
 	http.SetCookie(w, &http.Cookie{Name: "romrelay_admin", Value: s.adminToken, Path: "/", HttpOnly: true, Secure: strings.HasPrefix(s.base, "https://"), SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, path, http.StatusSeeOther)
 	return true
-}
-
-// adminPage is the operator view. The two flags gate the sections that depend on
-// optional wiring: a relay with no SFTP source or no 3DS converter would
-// otherwise show a form whose every submission is a 503.
-type adminPage struct {
-	pageData
-	RemoteQuery  string
-	HasRemote    bool
-	HasConverter bool
 }
 
 func (s *CatalogServer) adminShutdown(w http.ResponseWriter, r *http.Request) {
@@ -1086,66 +1082,6 @@ func (s *CatalogServer) withToken(path string) string {
 	}
 	return u
 }
-func (s *CatalogServer) index(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	if !s.ready.Load() {
-		// The catalog does not exist yet, so there is nothing to link to and no
-		// launcher worth showing: the page watches readiness and reloads itself.
-		data := setupPage{pageData: s.newPageData(r), Stage: s.SetupStage()}
-		data.Bare = true
-		s.render(w, "setup", "setup", data)
-		return
-	}
-	games, err := s.store.Games(r.Context())
-	if err != nil {
-		http.Error(w, "catalog unavailable", 500)
-		return
-	}
-	// One release, one card: the same game in several file forms (encrypted and
-	// unencrypted CIA) is merged here, and the game view offers the forms.
-	games = mergeGames(games)
-	filter := parseCatalogFilter(r.URL.Query())
-	data := catalogPage{
-		pageData:         s.newPageData(r),
-		Games:            filterGames(games, filter),
-		Filter:           filter,
-		Facets:           catalogFacets(games, filter),
-		ConvertAvailable: s.convertUpload != nil,
-		CryptAvailable:   s.cryptAvailable(),
-	}
-	// The encrypted/unencrypted distinction only bites when 3DS content is in
-	// view, so the explanation appears exactly then.
-	data.Show3DSGuide = filter.Platforms["3ds"]
-	if s.remote != nil && filter.Query != "" && len(data.Games) == 0 {
-		data.RemoteURL = "/admin/patches?remote_q=" + url.QueryEscape(filter.Query)
-	}
-	// htmx asks for the same URL and selects #game-grid out of the response, so
-	// one handler serves both the page and the swap. There is no fragment
-	// endpoint that could drift from the page it mirrors.
-	s.render(w, "catalog", "catalog", data)
-}
-
-// setupPage is the first-boot view, shown while the initial index runs.
-type setupPage struct {
-	pageData
-	Stage string
-}
-
-// catalogPage is the library view. It embeds pageData so the shell's fields and
-// the page's own sit in one namespace for the template.
-type catalogPage struct {
-	pageData
-	Games            []catalog.Game
-	Filter           catalogFilter
-	Facets           catalogFacetSet
-	RemoteURL        string
-	Show3DSGuide     bool
-	ConvertAvailable bool
-	CryptAvailable   bool
-}
 
 func searchFold(value string) string {
 	value = strings.ToLower(norm.NFD.String(value))
@@ -1157,52 +1093,6 @@ func searchFold(value string) string {
 		}
 	}
 	return folded.String()
-}
-func (s *CatalogServer) game(w http.ResponseWriter, r *http.Request) {
-	g, err := s.store.Game(r.Context(), r.PathValue("id"))
-	if err == sql.ErrNoRows {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, "catalog unavailable", 500)
-		return
-	}
-	// Show the whole merged release, so an encrypted CIA's page also offers its
-	// unencrypted sibling as a variant (and vice versa).
-	if all, listErr := s.store.Games(r.Context()); listErr == nil {
-		if merged, ok := mergeSiblings(all, g.ID); ok {
-			g = merged
-		}
-	}
-	// The URLs depend on the request (its viewer token) and on the deployment (the
-	// advertised base), so they are resolved here rather than in a template
-	// function that would need to smuggle the request in with it.
-	artifacts := make([]artifactView, 0, len(g.Artifacts))
-	for _, artifact := range g.Artifacts {
-		artifacts = append(artifacts, artifactView{
-			Artifact:    artifact,
-			DownloadURL: s.downloadURL(r, artifact),
-			DirectURL:   s.withToken("/d/" + artifact.ID),
-			QRURL:       "/qr/" + artifact.ID + ".png" + tokenQuery(r),
-		})
-	}
-	s.render(w, "game", "game", gamePage{
-		pageData:     s.newPageData(r),
-		Game:         g,
-		Artifacts:    artifacts,
-		CoverURL:     "/media/" + g.ID + "/cover" + tokenQuery(r),
-		SynopsisNote: s.synopsisNote(g),
-	})
-}
-
-// gamePage is one game's detail view.
-type gamePage struct {
-	pageData
-	Game         catalog.Game
-	Artifacts    []artifactView
-	CoverURL     string
-	SynopsisNote string
 }
 
 // artifactView is one downloadable file with its links already resolved.
@@ -1237,6 +1127,10 @@ func (s *CatalogServer) synopsisNote(g catalog.Game) string {
 
 func (s *CatalogServer) catalogMedia(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if strings.HasPrefix(id, rommIDPrefix) {
+		s.rommCover(w, r)
+		return
+	}
 	if len(id) != 24 || strings.Trim(id, "0123456789abcdef") != "" || s.mediaDir == "" {
 		http.NotFound(w, r)
 		return
@@ -1286,63 +1180,6 @@ func humanBytes(n int64) string {
 		suffix = next
 	}
 	return fmt.Sprintf("%.1f %s", value, suffix)
-}
-
-func (s *CatalogServer) downloadChoice(w http.ResponseWriter, r *http.Request) {
-	a, err := s.store.Artifact(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, "catalog unavailable", 500)
-		return
-	}
-	if a.Encryption != "encrypted" {
-		http.Redirect(w, r, "/d/"+a.ID+tokenQuery(r), http.StatusSeeOther)
-		return
-	}
-	g, err := s.store.Game(r.Context(), a.GameID)
-	if err != nil {
-		http.Error(w, "catalog unavailable", 500)
-		return
-	}
-	var mobile *catalog.Artifact
-	for i := range g.Artifacts {
-		if g.Artifacts[i].Encryption == "unencrypted" {
-			copy := g.Artifacts[i]
-			mobile = &copy
-			break
-		}
-	}
-	ready, reason := false, "driver is not installed"
-	if s.decryptor != nil {
-		ready, reason = s.decryptor.Available()
-	}
-	data := choicePage{
-		pageData:      s.newPageData(r),
-		Artifact:      a,
-		EncryptedURL:  s.withToken("/d/" + a.ID),
-		Admin:         s.adminOK(r),
-		DecryptReady:  ready,
-		DecryptReason: reason,
-	}
-	if mobile != nil {
-		data.MobileURL = s.withToken("/d/" + mobile.ID)
-	}
-	s.render(w, "choice", "choice", data)
-}
-
-// choicePage explains the encrypted/unencrypted CIA difference before handing
-// over a file that may not work where the visitor means to use it.
-type choicePage struct {
-	pageData
-	Artifact      catalog.Artifact
-	EncryptedURL  string
-	MobileURL     string
-	Admin         bool
-	DecryptReady  bool
-	DecryptReason string
 }
 
 func (s *CatalogServer) apiGames(w http.ResponseWriter, r *http.Request) {

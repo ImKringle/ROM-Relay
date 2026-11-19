@@ -145,8 +145,8 @@ func isMachinePath(p string) bool {
 // and no JavaScript. That is what made the sign-in and change-password screens
 // look unstyled on any relay with a viewer token configured.
 func isPublicPath(p string) bool {
-	return p == "/login" || p == "/logout" ||
-		strings.HasPrefix(p, "/sprites/") || strings.HasPrefix(p, "/assets/")
+	return p == "/login" || p == "/logout" || p == "/api/session" ||
+		strings.HasPrefix(p, "/sprites/") || strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/app-assets/")
 }
 
 // security applies headers and the access model: machine routes use the viewer
@@ -198,6 +198,12 @@ func (s *CatalogServer) security(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
 			return
 		}
+		// Every state-changing request must come from this site and carry the
+		// CSRF token (see forgeryOK); WebDAV above has its own credential.
+		if !s.forgeryOK(r) {
+			http.Error(w, "Refused: this request did not come from ROM Relay's own pages. Reload and try again.", http.StatusForbidden)
+			return
+		}
 		if isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
@@ -220,7 +226,7 @@ func (s *CatalogServer) security(next http.Handler) http.Handler {
 		// page. The page itself and signing out stay reachable, or the user would
 		// be trapped in a redirect loop with no way forward or out. Machine and
 		// public routes were already handled above: a 3DS cannot fill in a form.
-		if needsPasswordChange(r) && r.URL.Path != passwordChangePath && r.URL.Path != "/logout" {
+		if needsPasswordChange(r) && r.URL.Path != passwordChangePath && r.URL.Path != "/logout" && r.URL.Path != "/api/account/password" && r.URL.Path != "/api/session" {
 			if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
 				http.Redirect(w, r, passwordChangePath, http.StatusSeeOther)
 				return
@@ -228,7 +234,7 @@ func (s *CatalogServer) security(next http.Handler) http.Handler {
 			http.Error(w, "Set your own password at "+passwordChangePath+" before using ROM Relay.", http.StatusForbidden)
 			return
 		}
-		adminRoute := strings.HasPrefix(r.URL.Path, "/admin/") || strings.HasPrefix(r.URL.Path, "/api/admin/")
+		adminRoute := r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") || strings.HasPrefix(r.URL.Path, "/api/admin/")
 		// Human routes: a login session is the only way in. The viewer token used to
 		// grant these too, which meant a copied `/?token=…` URL walked straight past
 		// the sign-in page, the token is a download credential, not an identity, and
@@ -256,65 +262,6 @@ func urlPathEscape(p string) string {
 		return "/"
 	}
 	return p
-}
-
-// loginPage renders the login form. A present, valid session is redirected home.
-func (s *CatalogServer) loginPage(w http.ResponseWriter, r *http.Request) {
-	if currentUser(r) != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-	s.renderLogin(w, r, urlPathEscape(r.URL.Query().Get("next")), "", http.StatusOK)
-}
-
-// renderLogin draws the sign-in form, optionally reporting a failed attempt.
-func (s *CatalogServer) renderLogin(w http.ResponseWriter, r *http.Request, next, message string, status int) {
-	data := loginPageData{pageData: s.newPageData(r), Next: next, Error: message}
-	data.Bare = true
-	s.renderStatus(w, status, "login", "login", data)
-}
-
-// loginPageData is the sign-in view.
-type loginPageData struct {
-	pageData
-	Next  string
-	Error string
-}
-
-// login validates credentials and, on success, issues a session cookie.
-func (s *CatalogServer) login(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-	next := urlPathEscape(r.FormValue("next"))
-	fail := func() {
-		s.renderLogin(w, r, next, "Incorrect username or password.", http.StatusUnauthorized)
-	}
-	if !validCredentials(username, password) {
-		fail()
-		return
-	}
-	user, err := s.store.UserByUsername(r.Context(), username)
-	// A disabled account is refused with the same message as a wrong password: a
-	// distinct one would confirm to a stranger that the account exists.
-	if err != nil || user.Disabled || !verifyPassword(user.PasswordHash, password) {
-		fail()
-		return
-	}
-	token, err := s.store.CreateSession(r.Context(), user.ID, time.Now().Add(sessionTTL))
-	if err != nil {
-		http.Error(w, "could not start session", http.StatusInternalServerError)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: token, Path: "/", HttpOnly: true,
-		Secure: strings.HasPrefix(s.base, "https://"), SameSite: http.SameSiteLaxMode,
-		Expires: time.Now().Add(sessionTTL),
-	})
-	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 // logout revokes the session and clears the cookie.

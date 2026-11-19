@@ -8,36 +8,6 @@ import (
 	"romrelay/internal/config"
 )
 
-// settingsPage is what adminsettings.html renders: the current values of the
-// fields the form allows editing. Directory paths (library, patch, save,
-// metadata cache locations) are shown nowhere here, they are filesystem
-// layout, not runtime knobs, and are left to a hand-edited config.ini as
-// today. Every field on this struct is ini-backed; nothing secret is ever
-// read into it.
-type settingsPage struct {
-	pageData
-	Cfg config.Config
-}
-
-// adminSettings serves the Settings screen. It 503s rather than rendering an
-// empty form when SetConfig was never called, that only happens in tests
-// that don't wire it, never in the real server (main.go always calls it).
-func (s *CatalogServer) adminSettings(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, "admin authentication required", http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/settings") {
-		return
-	}
-	cfg, _, ok := s.config()
-	if !ok {
-		http.Error(w, "settings are unavailable: the server was started without a configuration directory", http.StatusServiceUnavailable)
-		return
-	}
-	s.render(w, "adminsettings", "adminsettings", settingsPage{pageData: s.newPageData(r), Cfg: cfg})
-}
-
 // saveSettings applies the allowlisted fields from the form to a clone of the
 // current configuration, writes it, and re-validates by loading it back
 // through the same config.Load every startup uses, so this never duplicates
@@ -130,5 +100,47 @@ func (s *CatalogServer) saveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved":  true,
 		"detail": "Saved. Restart ROM Relay for these changes to take effect.",
+	})
+}
+
+// apiSettings returns exactly the fields saveSettings accepts, by name. It is
+// an explicit allowlist rather than the Config struct: Config's JSON tags
+// would expose secrets (IGDB client secret) to the browser.
+func (s *CatalogServer) apiSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOK(r) {
+		http.Error(w, "admin authentication required", http.StatusUnauthorized)
+		return
+	}
+	cfg, _, ok := s.config()
+	if !ok {
+		http.Error(w, "settings are unavailable: the server was started without a configuration directory", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scan_interval_hours":            cfg.LibraryScanIntervalHours,
+		"metadata_refresh_days":          cfg.MetadataRefreshDays,
+		"listen_address":                 cfg.Server.ListenAddress,
+		"port":                           cfg.Server.Port,
+		"advertise_ip":                   cfg.Server.AdvertiseIP,
+		"advertise_port":                 cfg.Server.AdvertisePort,
+		"public_base_url":                cfg.Server.PublicBaseURL,
+		"libretro_enabled":               cfg.Metadata.Libretro.Enabled,
+		"libretro_auto_update":           cfg.Metadata.Libretro.AutoUpdate,
+		"libretro_download_thumbnails":   cfg.Metadata.Libretro.DownloadThumbnails,
+		"igdb_enabled":                   cfg.Metadata.IGDB.Enabled,
+		"pokeapi_enabled":                cfg.Metadata.PokeAPI.Enabled,
+		"remote_search_enabled":          cfg.RemoteSearch.Enabled,
+		"remote_search_host":             cfg.RemoteSearch.Host,
+		"remote_search_port":             cfg.RemoteSearch.Port,
+		"remote_search_username":         cfg.RemoteSearch.Username,
+		"remote_search_root_directory":   cfg.RemoteSearch.RootDirectory,
+		"remote_search_host_key_sha256":  cfg.RemoteSearch.HostKeySHA256,
+		"remote_search_max_results":      cfg.RemoteSearch.MaxResults,
+		"remote_search_max_file_size_mb": cfg.RemoteSearch.MaxFileSizeMB,
+		"patching_enabled":               cfg.Patching.Enabled,
+		"retention_hours":                cfg.Patching.RetentionHours,
+		"max_rom_size_mb":                cfg.Patching.MaxROMSizeMB,
+		"max_patch_size_mb":              cfg.Patching.MaxPatchSizeMB,
+		"timeout_seconds":                cfg.Patching.TimeoutSeconds,
 	})
 }

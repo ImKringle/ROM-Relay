@@ -5,21 +5,6 @@ import (
 	"strings"
 )
 
-// apiKeysPage serves the API key management screen. Like the Users page, the
-// list is filled from the JSON API rather than server-rendered: creating a
-// key shows its token exactly once, and re-rendering the whole page would
-// lose it.
-func (s *CatalogServer) apiKeysPage(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, "admin authentication required", http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/api-keys") {
-		return
-	}
-	s.render(w, "apikeys", "apikeys", s.newPageData(r))
-}
-
 // adminAPIKey is one key as the management API reports it. The token itself
 // is never included once created.
 type adminAPIKey struct {

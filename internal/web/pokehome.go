@@ -317,18 +317,3 @@ func (s *CatalogServer) withdrawPokehome(w http.ResponseWriter, r *http.Request)
 		"save_id": saved.ID, "slot": wroteSlot, "instance_id": inst.ID,
 	})
 }
-
-// pokehomePage serves the PokeHome view: every Pokémon currently deposited,
-// rendered as a literal PC box grid. Filled by the client from /api/pokehome.
-func (s *CatalogServer) pokehomePage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "pokehome", "pokehome", s.newPageData(r))
-}
-
-// pokemonEditorPage serves the standalone Editor: create a Pokémon from
-// scratch, or edit any Pokémon read out of a save and send the change back
-// into it, without going through a PokeHome deposit first. Filled by the
-// client from /api/saves and /api/pokemon, the same editor/withdraw modals
-// PokeHome itself uses.
-func (s *CatalogServer) pokemonEditorPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "editor", "editor", s.newPageData(r))
-}

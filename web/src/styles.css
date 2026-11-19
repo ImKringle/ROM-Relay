@@ -1,0 +1,274 @@
+@import "tailwindcss";
+
+/* Pixel display face, self-hosted under /assets/fonts (CSP: default-src 'self'). */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/press-start-2p-latin.woff2") format("woff2");
+}
+
+/* ROM Relay's palette: deep black-blue, cyan phosphor. Every colour in the UI
+   comes from these tokens. */
+@theme {
+  --color-void: #03050a;
+  --color-bg: #070a12;
+  --color-panel: #0d1424;
+  --color-panel-2: #121c31;
+  --color-panel-3: #18253f;
+  --color-line: #1f2e4d;
+  --color-line-hi: #2c4170;
+  --color-text: #eef4ff;
+  --color-muted: #8ea3c4;
+  --color-faint: #5b6f92;
+  --color-cyan: #5ee7ff;
+  --color-cyan-hi: #22d3ee;
+  --color-cyan-deep: #0b6a86;
+  --color-blue: #3b82f6;
+  --color-blue-deep: #1e3a8a;
+  --color-leaf: #4ade80;
+  --color-gold: #facc15;
+  --color-danger: #ff6b81;
+  --color-on-cyan: #031b24;
+
+  --font-pixel: "Press Start 2P", ui-monospace, monospace;
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body {
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+  }
+  body {
+    min-height: 100dvh;
+    /* Faint arcade grid behind everything. */
+    background-image:
+      radial-gradient(circle at 50% -20%, #1b3a7a40, transparent 60%),
+      linear-gradient(#5ee7ff07 1px, transparent 1px),
+      linear-gradient(90deg, #5ee7ff07 1px, transparent 1px);
+    background-size: auto, 32px 32px, 32px 32px;
+  }
+  ::selection {
+    background: var(--color-cyan);
+    color: var(--color-on-cyan);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-cyan);
+    outline-offset: 2px;
+  }
+  a {
+    color: var(--color-cyan);
+  }
+}
+
+@layer components {
+  /* Headings and labels in the pixel face; body text stays readable. */
+  .pixel {
+    font-family: var(--font-pixel);
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+  }
+  .eyebrow {
+    font-family: var(--font-pixel);
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-cyan);
+  }
+
+  /* Panels: hard pixel border plus an offset drop, like a cartridge label. */
+  .panel {
+    background: linear-gradient(180deg, var(--color-panel-2), var(--color-panel));
+    border: 2px solid var(--color-line);
+    border-radius: 6px;
+    box-shadow: 4px 4px 0 var(--color-void);
+  }
+  .panel-hi {
+    border-color: var(--color-line-hi);
+  }
+
+  /* CRT hero: scanlines over a blue glow. */
+  .crt {
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 20% 0%, #2563eb33, transparent 55%),
+      radial-gradient(ellipse at 90% 100%, #5ee7ff1f, transparent 50%),
+      var(--color-panel);
+    border: 2px solid var(--color-line-hi);
+    border-radius: 8px;
+    box-shadow: 4px 4px 0 var(--color-void), inset 0 0 40px #5ee7ff12;
+  }
+  .crt::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(0deg, #00000038 0 1px, transparent 1px 3px);
+    mix-blend-mode: multiply;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.95rem;
+    border: 2px solid var(--color-line-hi);
+    border-radius: 4px;
+    background: var(--color-panel-3);
+    color: var(--color-text);
+    font-weight: 700;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 3px 3px 0 var(--color-void);
+    transition: transform 60ms, box-shadow 60ms, background 120ms;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--color-line-hi);
+  }
+  .btn:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: 1px 1px 0 var(--color-void);
+  }
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--color-cyan);
+    border-color: var(--color-cyan-hi);
+    color: var(--color-on-cyan);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: #8ff0ff;
+  }
+  .btn-danger {
+    border-color: #7f2a3a;
+    color: var(--color-danger);
+  }
+  .btn-sm {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.75rem;
+  }
+
+  .field {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 2px solid var(--color-line);
+    border-radius: 4px;
+    background: var(--color-void);
+    color: var(--color-text);
+    font-size: 0.9rem;
+  }
+  .field:focus {
+    border-color: var(--color-cyan);
+    outline: none;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.15rem 0.45rem;
+    border: 1px solid var(--color-line-hi);
+    border-radius: 3px;
+    background: var(--color-panel-3);
+    color: var(--color-muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+  .badge-cyan {
+    border-color: var(--color-cyan-deep);
+    color: var(--color-cyan);
+    background: #0b6a8626;
+  }
+  .badge-leaf {
+    border-color: #166534;
+    color: var(--color-leaf);
+    background: #16653426;
+  }
+  .badge-gold {
+    border-color: #854d0e;
+    color: var(--color-gold);
+    background: #854d0e26;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.6rem;
+    border: 2px solid var(--color-line);
+    border-radius: 4px;
+    background: var(--color-panel);
+    color: var(--color-muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .chip[aria-pressed="true"],
+  .chip-on {
+    border-color: var(--color-cyan);
+    color: var(--color-cyan);
+    background: #0b6a8633;
+  }
+
+  /* Game card: cover well on top, label below, lifts on hover. */
+  .card {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-width: 0;
+    overflow: hidden;
+    border: 2px solid var(--color-line);
+    border-radius: 6px;
+    background: var(--color-panel);
+    box-shadow: 4px 4px 0 var(--color-void);
+    transition: transform 100ms, border-color 100ms;
+    color: var(--color-text);
+    text-decoration: none;
+    text-align: left;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--color-cyan-deep);
+  }
+  .well {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 3 / 4;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0.5rem;
+    background: var(--color-void);
+  }
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: #02040acc;
+    backdrop-filter: blur(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

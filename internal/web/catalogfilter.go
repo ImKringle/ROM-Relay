@@ -246,6 +246,9 @@ func platformLabel(id string) string {
 			return platform.Name
 		}
 	}
+	if name, ok := rommPlatformNames.Load(id); ok {
+		return name.(string)
+	}
 	return strings.ToUpper(id)
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,10 @@ func TestFTPRoutesRejectNonPrivateHost(t *testing.T) {
 	// arbitrary host with attacker-supplied FTP credentials.
 	for _, host := range []string{"8.8.8.8", "127.0.0.1"} {
 		for _, path := range []string{"/api/ftp/browse", "/api/ftp/send"} {
-			res, err := http.PostForm(ts.URL+path, url.Values{"host": {host}, "port": {"5000"}})
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(url.Values{"host": {host}, "port": {"5000"}}.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-CSRF-Token", ui.csrf)
+			res, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}

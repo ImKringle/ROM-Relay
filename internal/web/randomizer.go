@@ -10,14 +10,6 @@ import (
 	"romrelay/internal/randomizer"
 )
 
-// randomizerPage serves the ROM Randomizer view, under Pokémon Tools. Filled by
-// the client from /api/randomizer-jobs; the surrounding auth middleware already
-// requires a signed-in session for any non-public route, so unlike the public
-// ROM Patcher there is no separate CSRF-cookie dance here.
-func (s *CatalogServer) randomizerPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "randomizer", "randomizer", s.newPageData(r))
-}
-
 func (s *CatalogServer) createRandomizeJob(w http.ResponseWriter, r *http.Request) {
 	if s.randomizer == nil || !s.randomizer.Available() {
 		http.Error(w, "randomizer is unavailable", http.StatusServiceUnavailable)

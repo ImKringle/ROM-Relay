@@ -703,8 +703,3 @@ func contentDisposition(name string) string {
 	}
 	return fmt.Sprintf("attachment; filename=%q", clean)
 }
-
-// savesPage serves the Save Data view: every save you have stored, per game.
-func (s *CatalogServer) savesPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "saves", "saves", s.newPageData(r))
-}

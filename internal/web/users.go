@@ -22,21 +22,6 @@ func temporaryPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// usersPage serves the account management screen. The list is filled from
-// /api/admin/users by the bundle rather than server-rendered: every action on the
-// page changes it, and re-rendering the whole page after each one would lose the
-// temporary password shown alongside it.
-func (s *CatalogServer) usersPage(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, "admin authentication required", http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/users") {
-		return
-	}
-	s.render(w, "users", "users", s.newPageData(r))
-}
-
 // adminUser is one account as the management API reports it. The password hash is
 // never included.
 type adminUser struct {

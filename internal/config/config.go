@@ -96,6 +96,31 @@ type Randomizer struct {
 	TimeoutSeconds  int    `json:"timeout_seconds"`
 }
 
+// Torrent enables leech-only single-file grabs out of admin-supplied
+// .torrent files. With no QBittorrentURL, ROM Relay runs its own private
+// qBittorrent (QBittorrentPath, else qbittorrent-nox on PATH).
+type Torrent struct {
+	Enabled        bool   `json:"enabled"`
+	QBittorrentURL string `json:"qbittorrent_url"`
+	// QBittorrentPath overrides the qbittorrent-nox binary the managed
+	// instance is started from. Ignored when QBittorrentURL is set.
+	QBittorrentPath string `json:"qbittorrent_path"`
+	Username        string `json:"username"`
+	Password        string `json:"-"`
+	// SavePath is the library directory as qBittorrent sees it (differs when
+	// qBittorrent runs in another container or host). Blank = LibraryDirectory.
+	SavePath string `json:"save_path"`
+	// Directory holds uploaded .torrent files.
+	Directory string `json:"directory"`
+}
+
+// Romm points at a RomM instance whose library users can search and grab
+// from. Every RomM call is made server-side; Token never leaves the relay.
+type Romm struct {
+	URL   string `json:"url"`
+	Token string `json:"-"`
+}
+
 type Config struct {
 	LibraryDirectory         string       `json:"library_directory"`
 	DatabasePath             string       `json:"database_path"`
@@ -110,6 +135,8 @@ type Config struct {
 	Patching                 Patching     `json:"patching"`
 	Randomizer               Randomizer   `json:"randomizer"`
 	WebDAV                   WebDAV       `json:"webdav"`
+	Torrent                  Torrent      `json:"torrent"`
+	Romm                     Romm         `json:"romm"`
 
 	// PokemonSidecarURL is the base URL of the PKHeX save-parsing sidecar. When
 	// empty, Pokémon save ingestion and the Living Dex are disabled.
@@ -226,6 +253,29 @@ func Load(dir string) (Config, error) {
 	}
 
 	c.WebDAV.Enabled = r.boolean("webdav", "enabled")
+
+	c.Torrent.Enabled = r.boolean("torrent", "enabled")
+	c.Torrent.QBittorrentURL = strings.TrimRight(r.str("torrent", "qbittorrent_url"), "/")
+	c.Torrent.QBittorrentPath = r.str("torrent", "qbittorrent_path")
+	// The Docker stack points at its qbittorrent sidecar through the
+	// environment, the same way it wires the other sidecars, and that alone
+	// switches the feature on there.
+	if v := strings.TrimRight(sec.get("QBITTORRENT_URL"), "/"); v != "" {
+		c.Torrent.QBittorrentURL, c.Torrent.Enabled = v, true
+	}
+	c.Torrent.Username = r.str("torrent", "username")
+	c.Torrent.Password = sec.get("QBITTORRENT_PASSWORD")
+	c.Torrent.SavePath = r.str("torrent", "save_path")
+	c.Torrent.Directory = r.str("torrent", "directory")
+
+	c.Romm.URL = strings.TrimRight(r.str("romm", "url"), "/")
+	if v := strings.TrimRight(sec.get("ROMM_URL"), "/"); v != "" {
+		c.Romm.URL = v
+	}
+	c.Romm.Token = sec.get("ROMM_TOKEN")
+	if c.Romm.URL != "" && c.Romm.Token == "" {
+		c.Warnings = append(c.Warnings, "romm url is set but ROMM_TOKEN is not; RomM search is disabled")
+	}
 
 	c.SaveDirectory = r.str("storage", "save_directory")
 
@@ -349,6 +399,9 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 		// relative path, against the config directory.
 		c.Metadata.PokeAPI.DataDirectory = filepath.Join("third_party", "api-data", "data", "api", "v2")
 	}
+	if c.Torrent.Directory == "" {
+		c.Torrent.Directory = "torrents"
+	}
 	if c.Patching.PatchDirectory == "" {
 		c.Patching.PatchDirectory = "patches"
 	}
@@ -447,6 +500,7 @@ func loadV2(c Config, base string, scanConfigured, patchEnabledConfigured, libre
 	c.LibraryDirectory = absolute(base, c.LibraryDirectory)
 	c.DatabasePath = absolute(base, c.DatabasePath)
 	c.SaveDirectory = absolute(base, c.SaveDirectory)
+	c.Torrent.Directory = absolute(base, c.Torrent.Directory)
 	c.Patching.PatchDirectory = absolute(base, c.Patching.PatchDirectory)
 	c.Patching.OutputDirectory = absolute(base, c.Patching.OutputDirectory)
 	c.Metadata.Libretro.DatabaseDirectory = absolute(base, c.Metadata.Libretro.DatabaseDirectory)

@@ -22,6 +22,11 @@ var Platforms = []Platform{
 	{"snes", "Super Nintendo", "snes", []string{".smc", ".sfc", ".fig"}},
 	{"n64", "Nintendo 64", "n64", []string{".n64", ".z64"}},
 	{"genesis", "Sega Genesis", "genesis", []string{".gen", ".bin", ".md", ".smd"}},
+	{"gc", "Nintendo GameCube", "gc", []string{".iso", ".gcm", ".rvz", ".gcz", ".ciso"}},
+	{"ps1", "PlayStation", "ps1", []string{".chd", ".cue", ".bin", ".pbp", ".m3u"}},
+	{"ps2", "PlayStation 2", "ps2", []string{".iso", ".chd", ".cso"}},
+	{"psp", "PlayStation Portable", "psp", []string{".iso", ".cso", ".pbp"}},
+	{"switch", "Nintendo Switch", "switch", []string{".nsp", ".xci", ".nsz", ".xcz"}},
 }
 
 func PlatformByID(id string) (Platform, bool) {
@@ -33,16 +38,66 @@ func PlatformByID(id string) (Platform, bool) {
 	return Platform{}, false
 }
 
+// PlatformByFilename resolves a platform from the extension alone. An
+// extension several platforms share (.iso, .bin, .chd, .cso, .pbp) is
+// ambiguous and returns false: guessing would file a PS2 disc as GameCube.
+// Use PlatformByPath, or the source's own platform, for those.
 func PlatformByFilename(name string) (Platform, bool) {
 	ext := strings.ToLower(filepath.Ext(filepath.Base(name)))
+	var found []Platform
 	for _, p := range Platforms {
-		for _, allowed := range p.Extensions {
-			if ext == allowed {
-				return p, true
+		if p.Has(ext) {
+			found = append(found, p)
+		}
+	}
+	if len(found) != 1 {
+		return Platform{}, false
+	}
+	return found[0], true
+}
+
+// Has reports whether ext (".iso", lower-case) is one of p's extensions.
+func (p Platform) Has(ext string) bool {
+	for _, allowed := range p.Extensions {
+		if ext == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// PlatformByPath is PlatformByFilename plus a tie-break for shared
+// extensions: a folder in the path naming the platform ("ps2/",
+// "PlayStation 2/", "Sega Genesis/") decides. Torrents and archives
+// usually carry one.
+func PlatformByPath(name string) (Platform, bool) {
+	if p, ok := PlatformByFilename(name); ok {
+		return p, true
+	}
+	clean := strings.ToLower(strings.ReplaceAll(name, `\`, "/"))
+	ext := strings.ToLower(filepath.Ext(clean))
+	dirs := strings.Split(clean, "/")
+	dirs = dirs[:len(dirs)-1]
+	// The longest matching name wins, so "PlayStation 2/" is PS2, not PS1.
+	var best Platform
+	bestLen := 0
+	for _, p := range Platforms {
+		if !p.Has(ext) {
+			continue
+		}
+		for _, d := range dirs {
+			n := 0
+			if d == p.Directory || d == p.ID {
+				n = len(d)
+			} else if strings.Contains(d, strings.ToLower(p.Name)) {
+				n = len(p.Name)
+			}
+			if n > bestLen {
+				best, bestLen = p, n
 			}
 		}
 	}
-	return Platform{}, false
+	return best, bestLen > 0
 }
 
 // ValidateROMUpload performs bounded structural checks before an untrusted

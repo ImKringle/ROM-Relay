@@ -7,20 +7,6 @@ import (
 	"net/http"
 )
 
-// adminSaves serves the Player Data screen: pick a user, see their saves and
-// Pokédex/Trainer data. The roster comes from the existing /api/admin/users
-// endpoint the Users page already uses.
-func (s *CatalogServer) adminSaves(w http.ResponseWriter, r *http.Request) {
-	if !s.adminOK(r) {
-		http.Error(w, "admin authentication required", http.StatusUnauthorized)
-		return
-	}
-	if s.adminTokenLanding(w, r, "/admin/saves") {
-		return
-	}
-	s.render(w, "adminsaves", "adminsaves", s.newPageData(r))
-}
-
 // adminUserSaves lists one user's saves for the admin's Player Data view. It
 // is the same data listSaves returns for a signed-in user's own saves, minus
 // the box-art enrichment: this table is for administration, not browsing.

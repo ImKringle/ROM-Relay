@@ -5,19 +5,6 @@ import (
 	"strings"
 )
 
-// webdavKeysPage serves the self-service WebDAV key management screen. Like
-// the admin API-keys page, the list is filled from the JSON API rather than
-// server-rendered: creating a key shows its token exactly once, and
-// re-rendering the whole page would lose it.
-func (s *CatalogServer) webdavKeysPage(w http.ResponseWriter, r *http.Request) {
-	user := currentUser(r)
-	if user == nil {
-		http.Redirect(w, r, "/login?next=/account/webdav", http.StatusSeeOther)
-		return
-	}
-	s.render(w, "webdavkeys", "webdavkeys", s.newPageData(r))
-}
-
 // webdavKey is one key as the management API reports it. The token itself
 // is never included once created.
 type webdavKey struct {
