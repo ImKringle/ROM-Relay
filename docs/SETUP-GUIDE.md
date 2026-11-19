@@ -9,11 +9,14 @@ share on your own network.
 
 ## 1. Install with Docker Compose
 
-ROM Relay runs as one Docker Compose stack: the app, PostgreSQL, and the PKHeX
-save-parsing sidecar. You need Docker Desktop (Windows/macOS) or Docker Engine
-(Linux).
+ROM Relay runs as one Docker Compose stack: the app, PostgreSQL, and sidecars
+for PKHeX (saves), NDecrypt (NDS/3DS crypto), the Pokémon randomizer, and
+qBittorrent. You need Docker Desktop (Windows/macOS) or Docker Engine (Linux).
 
-1. Clone or download this repository to a permanent location.
+1. Clone with submodules to a permanent location:
+   `git clone --recursive <repo-url>` (or `git submodule update --init` in an
+   existing checkout). The build needs `third_party/ndecrypt` and the Pokédex
+   reads `third_party/api-data`.
 2. From the repo root, copy `.env.example` to `.env`.
 3. Edit `.env`: set a strong `POSTGRES_PASSWORD`, an `ADMIN_PASSWORD` for the
    first admin account, and point `ROMS_DIR` at your `platforms/` folder
@@ -21,9 +24,11 @@ save-parsing sidecar. You need Docker Desktop (Windows/macOS) or Docker Engine
 4. `docker compose up -d --build`, run from the repo root.
 5. Open `http://<your-host>:8080` (or `HTTP_PORT` from `.env`).
 
-Non-secret settings live in `config.docker.ini`; secrets stay in `.env` at
-the repo root. Keep `config.example.ini` and `.env.example` unchanged as
-references. To advertise the right address in QR and download URLs, set
+Non-secret settings default to `config.docker.ini`; to change them, copy it to
+`config.ini` (gitignored), edit, and rebuild. Secrets stay in `.env` at the
+repo root. Keep `config.example.ini` and `.env.example` unchanged as
+references. The qBittorrent sidecar publishes peer port `QBT_TORRENTING_PORT`
+(default 6881, TCP+UDP); forward it on your router for fast torrent grabs. To advertise the right address in QR and download URLs, set
 `PUBLIC_BASE_URL` in `.env`, either your host's LAN address
 (`http://192.168.1.50:8080`) or, for remote access, a reverse proxy's public
 URL such as a Cloudflare Tunnel hostname (`https://romrelay.example.com`).

@@ -138,7 +138,7 @@ services:
       QBITTORRENT_URL: http://qbittorrent:8080
       # The address to advertise in catalog/QR/download URLs. Behind the
       # Cloudflare Tunnel, set PUBLIC_BASE_URL to the tunnel hostname in
-      # .env, e.g. PUBLIC_BASE_URL=https://romrelay.kringleslab.dev
+      # .env, e.g. PUBLIC_BASE_URL=https://romrelay.example.com
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ADVERTISE_IP: ${ADVERTISE_IP:-}
     networks:

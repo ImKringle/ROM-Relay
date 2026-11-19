@@ -27,10 +27,10 @@ FROM gcr.io/distroless/static-debian12:latest
 WORKDIR /app
 COPY --from=build /out/romrelay /app/romrelay
 # Baked-in container defaults (data under /app/data, Postgres via DATABASE_URL).
-# Override by mounting your own /app/config.ini and passing secrets via .env.
-COPY config.ini /app/config.ini
-COPY config.example.ini /app/config.example.ini
-COPY .env.example /app/.env.example
+# config.docker.ini is the committed default; a local config.ini (gitignored)
+# replaces it when present. The [i] glob lets the build succeed without one.
+COPY config.docker.ini /app/config.ini
+COPY config.example.ini .env.example config.in[i] /app/
 EXPOSE 8080
 VOLUME ["/app/data"]
 # No shell in the image, so the health check runs the binary's own probe mode.

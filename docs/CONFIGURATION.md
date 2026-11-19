@@ -1,8 +1,10 @@
 # ROM Relay configuration
 
-ROM Relay reads two files once during startup, both in its config directory (`config.docker.ini` and `.env` at the repo root in the Docker deployment):
+ROM Relay reads two files once during startup, both in its config directory:
 
-- `config.ini`, non-secret settings, grouped in `[section]` blocks. Copy `config.example.ini` to `config.ini` and edit. Every key shows its default; delete a line to accept the default.
+- `config.ini`, non-secret settings, grouped in `[section]` blocks. Every key in `config.example.ini` shows its default; delete a line to accept the default.
+  - **Docker:** the image bakes in `config.docker.ini` (container paths under `/app/data`). To customize, copy it to `config.ini` in the repo root (gitignored), edit, and rebuild with `docker compose up -d --build`; a root `config.ini` replaces the default at build time.
+  - **Native binary:** copy `config.example.ini` to `config.ini` next to the executable.
 - `.env`, secrets (tokens, passwords, IGDB credentials). Copy `.env.example` to `.env`. Never commit it. Values already present in the process environment (for example Docker `--env-file .env`) override the file, so a container needs no on-disk `.env`.
 
 Changes, including `ui_theme`, require a restart. Relative paths in `config.ini` resolve from the file's directory. A different directory can be pointed at with the `-config-dir <path>` flag.
@@ -15,7 +17,12 @@ Secrets live only in `.env`:
 | `ADMIN_ACCESS_TOKEN` | Admin/patch-workspace token (min 24 chars, must differ from the viewer token). Blank = generated per run. |
 | `IGDB_CLIENT_ID`, `IGDB_CLIENT_SECRET` | IGDB metadata credentials. |
 | `REMOTE_SEARCH_PASSWORD` | SFTP password for remote search. |
-| `DATABASE_URL` | Optional `postgres://` URL selecting the PostgreSQL backend. Blank = SQLite. |
+| `DATABASE_URL` | Optional `postgres://` URL selecting the PostgreSQL backend. Blank = SQLite. Docker sets it to the bundled Postgres. |
+| `ADMIN_PASSWORD` | Password for the built-in `admin` login. Blank = random, printed once in the startup log. |
+| `ROMM_URL`, `ROMM_TOKEN` | RomM instance and API token (`roms.read`, plus `assets.read` for covers). |
+| `QBITTORRENT_URL`, `QBITTORRENT_PASSWORD` | External qBittorrent; setting the URL switches torrents on. Docker points it at the sidecar. |
+| `POKEMON_SIDECAR_URL`, `RANDOMIZER_SIDECAR_URL`, `NDECRYPT_SIDECAR_URL` | Sidecar endpoints. Docker sets these; native runs must start the sidecars themselves. Blank = that feature is off. |
+| `PUBLIC_BASE_URL`, `ADVERTISE_IP` | Address advertised in QR/download links. Required in Docker. |
 
 ## API access
 

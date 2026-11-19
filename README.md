@@ -12,9 +12,9 @@
 
 **Your ROMs. Your network. Your relay.**
 
-ROM Relay is a self-hosted game library and Pokémon toolkit for ROMs you legally dumped. Point it at your collection, open it from any device on your network, and download, patch, install, and track, it ships no games, patches, or keys, and it will not find them for you.
+ROM Relay is a self-hosted game library and Pokémon toolkit for ROMs you legally dumped. Point it at your collection, open it from any device on your network, and download, patch, install, and track. It ships no games, patches, or keys, and only fetches from sources you configure yourself.
 
-The whole stack runs from one `docker compose up`: the app, PostgreSQL, and the PKHeX save-parsing sidecar.
+The whole stack runs from one `docker compose up`: the app, PostgreSQL, and sidecars for save parsing, 3DS/NDS crypto, randomizing, and torrents.
 
 ---
 
@@ -26,10 +26,26 @@ The whole stack runs from one `docker compose up`: the app, PostgreSQL, and the 
 | 📱 **QR downloads** | Direct-download QR codes for Delta and Manic EMU, plus ordered FBI batch QR codes and port-5000 push for installing CIAs on a real 3DS. |
 | 🧩 **ROM Patcher** | Applies IPS, UPS, BPS, PPF, RUP, APS, BSDiff, PMSR, and VCDiff against a clean base you upload, with checksum validation before publication. Public results expire in 24 h unless an admin keeps them. |
 | 🔄 **3DS conversion** | Converts supported `.3ds`/`.cci` cartridge dumps to installable CIAs (needs your own `boot9.bin`). |
-| 📖 **Pokédex** | Upload a Pokémon save and ROM Relay reads it with PKHeX: a Living Dex across every game you play, per-region and per-game Pokédexes, trainers, badges, and Hall of Fame. |
+| 🔐 **NDS/3DS crypto** | Encrypt or decrypt raw `.nds`/`.3ds`/`.cci` dumps through the NDecrypt sidecar (needs your own keys). |
+| 📡 **FTP send** | Browse a 3DS/NDS running a homebrew FTP server (e.g. ftpd) and copy library files straight onto it. |
+| 📖 **Pokédex** | Upload a Pokémon save and ROM Relay reads it with PKHeX: a Living Dex across every game you play, per-region and per-game Pokédexes, trainers, badges, Hall of Fame, and a type chart. Species detail comes from an offline PokeAPI dump. |
+| 🏠 **PokeHOME** | Deposit Pokémon out of saves into a per-user box, edit them with legality checks, and download any one as a `.pkm` that desktop PKHeX opens. |
+| 🎲 **Randomizer** | Randomize Gen 1–5 Pokémon ROMs with Universal Pokemon Randomizer ZX, configured from the web UI. |
 | 💾 **Save Vault** | Versioned storage for game saves. Every upload is kept as a new version; pick your progress up on any device. |
-| 👥 **Accounts** | Multi-user with roles. Each user has their own Pokédex and saves; admins manage users, metadata, patch publishing, and retention. |
-| 🔍 **Remote search** | Optional search-and-import from a private SFTP library you control, with pinned host keys. |
+| 👥 **Accounts** | Multi-user with roles. Each user has their own Pokédex and saves; admins manage users, metadata, patch publishing, retention, and API keys. |
+| 🗂️ **WebDAV** | Optional read-only `/webdav/` view of the catalog for emulators that import from a "cloud drive", with a key per user. |
+
+### Optional integrations
+
+None of these are needed. Each one turns on once you configure it:
+
+| Integration | What it adds | Configure |
+|---|---|---|
+| **RomM** | Search and grab ROMs from your RomM instance, and fill in metadata/covers by hash match. Grabs are kept for 7 days unless an admin retains them. | `ROMM_URL` + `ROMM_TOKEN` (`roms.read`, add `assets.read` for covers) |
+| **Torrents** | Admins upload `.torrent` sources and users grab single games. Leech-only (no seeding); grabs are pruned after 7 days unless kept. | Bundled qBittorrent sidecar; forward `QBT_TORRENTING_PORT` (6881 TCP/UDP) |
+| **IGDB** | Descriptions and extra metadata. | `[metadata.igdb] enabled` + `IGDB_CLIENT_ID`/`IGDB_CLIENT_SECRET` |
+| **Remote SFTP** | Search and import from a private SFTP library, with pinned host keys. | `[remote_search]` + `REMOTE_SEARCH_PASSWORD` |
+| **Reverse proxy / tunnel** | Remote access with working QR codes. | `PUBLIC_BASE_URL` |
 
 ## Quick start
 
@@ -48,29 +64,38 @@ platforms/
 Then:
 
 ```bash
-cp .env.example .env    # set POSTGRES_PASSWORD, ADMIN_PASSWORD, ROMS_DIR
+git clone --recursive <repo-url> && cd ROM-Relay   # or: git submodule update --init
+cp .env.example .env    # set POSTGRES_PASSWORD, ADMIN_PASSWORD, ROMS_DIR, PUBLIC_BASE_URL
 docker compose up -d --build
 ```
 
-Run both from the repo root. Open `http://<host>:8080` and sign in as `admin`. The first boot indexes ROM headers in seconds, even for a 50 GB library, and hashes content in the background while you browse.
+Open `http://<host>:8080` and sign in as `admin`. The first boot indexes ROM headers in seconds, even for a 50 GB library, and hashes content in the background while you browse.
 
-- **Walkthrough**: [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md)
-- **Every setting**: [docs/CONFIGURATION.md](docs/CONFIGURATION.md), non-secret settings live in `config.docker.ini`, secrets in `.env`.
-- **API reference**: [docs/API.md](docs/API.md).
-- **Back up** the Postgres volume *and* the save directory: user saves live on disk, not in the database.
-- **Remote access**: point a reverse proxy or tunnel (e.g. a Cloudflare Tunnel) at the published port and set `PUBLIC_BASE_URL` in `.env` to its public URL, otherwise QR codes and download links advertise an address only reachable on your LAN.
+- **Submodules are required**: `third_party/ndecrypt` is needed for the build, and `third_party/api-data` feeds the Pokédex.
+- **Set `PUBLIC_BASE_URL`** (or `ADVERTISE_IP`) in `.env`. Inside a container, auto-detection only sees the compose network, so without it QR codes and download links point nowhere. Behind a reverse proxy or tunnel (e.g. Cloudflare Tunnel), use its public URL.
+- **Settings**: the image bakes in `config.docker.ini`. To customize, copy it to `config.ini` (gitignored), edit, and rebuild. Secrets go in `.env`. Every setting: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+- **Optional key material** (read-only `DRIVERS_DIR`, default `./drivers`): `3ds/boot9.bin` for CIA conversion, `ndecrypt/config.json` for NDS/3DS crypto (format in `third_party/ndecrypt/config-default.json`).
+- **Ports**: `HTTP_PORT` (default 8080) for the app, and `QBT_TORRENTING_PORT` (default 6881 TCP+UDP) for torrent peers. The sidecars are never published.
+- **Back up** the Postgres volume, `romrelay-storage` (user saves and `.torrent` sources), and `romrelay-patches` (uploaded patches). Saves live on disk, not in the database.
+- **Walkthrough**: [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md) · **API**: [docs/API.md](docs/API.md)
 
 ## The stack
 
 ```
 docker-compose.yml
-├── romrelay   Go app: library, web UI, patcher, QR, Pokédex
-├── db         PostgreSQL 16 (catalog, users, dex)
-├── pkhex      .NET save-parsing sidecar (internal network only)
-└── ndecrypt   .NET encrypt/decrypt sidecar (internal network only)
+├── romrelay     Go app: library, web UI, patcher, QR, Pokédex, WebDAV
+├── db           PostgreSQL 16 (catalog, users, dex)
+├── pkhex        .NET PKHeX sidecar: save parsing, legality, editing
+├── ndecrypt     .NET NDS/3DS encrypt/decrypt sidecar
+├── randomizer   Java Universal Pokemon Randomizer ZX sidecar
+└── qbittorrent  leech-only torrent client, on its own network with romrelay only
 ```
 
-The web UI is embedded in the Go binary, no Node at runtime. The image builds multi-arch (`linux/amd64`, `linux/arm64`) for mini PCs and ARM boards alike.
+Only `romrelay` (HTTP) and qBittorrent's peer port are published; every sidecar API stays on the internal network. The web UI is embedded in the Go binary, no Node at runtime. The image builds multi-arch (`linux/amd64`, `linux/arm64`) for mini PCs and ARM boards alike.
+
+### Running without Docker
+
+`go build ./cmd/romrelay` produces a single binary that reads `config.ini` and `.env` from its own directory (or `-config-dir`). Leave `DATABASE_URL` blank for SQLite. Sidecar features stay off until you run those services yourself and set `POKEMON_SIDECAR_URL`, `RANDOMIZER_SIDECAR_URL`, and `NDECRYPT_SIDECAR_URL`. With `[torrent] enabled = true` and no `QBITTORRENT_URL`, it runs a private `qbittorrent-nox` from `PATH`. Run in a terminal, it shows a live operator dashboard.
 
 ## Patch recipes
 
@@ -96,15 +121,17 @@ UPS/BPS embedded base checksums are indexed automatically; add a `recipe.json` f
 - Scripts and other tools authenticate as named, revocable API keys (`Authorization: Bearer <token>`) issued
   from **Admin → API Keys**, instead of sharing a login session. See [docs/API.md](docs/API.md).
 - The UI ships a strict Content-Security-Policy, no inline scripts or styles.
-- Protect `.env`: it holds the database password and any SFTP/IGDB credentials.
+- RomM tokens never leave the server: the relay proxies every RomM call.
+- WebDAV is read-only, with no write path, and each user has their own revocable key.
+- Protect `.env`: it holds the database password and any SFTP/IGDB/RomM credentials.
 
 ## Developing
 
-Go 1.25+, and Node only if you touch the UI source:
+Go 1.25+, and Node only if you touch the UI source (`web/`, React + Vite):
 
 ```bash
-go test ./...           # full suite, synthetic fixtures
-npm run build           # regenerate internal/web/ui/dist after UI changes
+go test ./...                     # full suite, synthetic fixtures
+cd web && npm ci && npm run build # regenerate internal/web/spa/dist (committed) after UI changes
 ```
 
 An optional integration test exercises your own local collection without committing bytes: set `ROMRELAY_FIXTURE_ROOT` and run `go test ./internal/integration -run TestOperatorSuppliedROMAndPatchFixtures`.
